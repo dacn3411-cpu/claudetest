@@ -171,59 +171,13 @@ export function SettingsModal({
         </div>
 
         <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-          {/* Training Mode (MODE 1 ~ MODE 4) */}
-          <div className="md:col-span-2 p-3.5 rounded-2xl bg-purple-50 border border-purple-200">
-            <label className="block font-bold mb-2 text-purple-950">
-              훈련 모드 선택 (MODE 1 ~ MODE 4)
-            </label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {([1, 2, 3, 4] as TrainingModeId[]).map((mId) => {
-                const mCfg = TRAINING_MODES[mId];
-                const active = (settings.trainingMode ?? 1) === mId;
-                return (
-                  <button
-                    key={mId}
-                    type="button"
-                    onClick={() => onUpdate({ trainingMode: mId })}
-                    className="p-2.5 rounded-xl text-left transition-all flex items-start justify-between gap-2"
-                    style={{
-                      backgroundColor: active ? PALETTE.primaryPurple : '#FFFFFF',
-                      color: active ? '#FFFFFF' : PALETTE.darkPurple,
-                      border: `2px solid ${active ? PALETTE.cyan : '#D8CEFF'}`,
-                    }}
-                  >
-                    <div>
-                      <div className="text-xs font-black">
-                        {mCfg.code}. {mCfg.name}
-                      </div>
-                      <div
-                        className="text-[11px] font-semibold mt-0.5"
-                        style={{ color: active ? '#E2D9FF' : '#475569' }}
-                      >
-                        이동: {mCfg.allowMovement ? '가능' : '불가능'} · 회전: {mCfg.yawRangeLabel}
-                      </div>
-                    </div>
-                    {active && (
-                      <span
-                        className="px-2 py-0.5 rounded-full text-[10px] font-black shrink-0"
-                        style={{ backgroundColor: PALETTE.yellow, color: PALETTE.darkPurple }}
-                      >
-                        ✓ 선택
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
           {/* Difficulty */}
           <div className="p-3.5 rounded-2xl bg-purple-50 border border-purple-200">
             <label className="block font-bold mb-1.5 text-purple-950">
-              난이도 단계 (Lv 1 ~ 10)
+              난이도 단계 (Lv 1 ~ 5, 손 조작)
             </label>
             <div className="grid grid-cols-5 gap-1.5">
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((lv) => (
+              {[1, 2, 3, 4, 5].map((lv) => (
                 <button
                   key={lv}
                   type="button"

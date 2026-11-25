@@ -30,6 +30,32 @@ export const PROJECT_C_GLB_REMOTE_COMPRESSED_URL =
   'https://raw.githubusercontent.com/dacn3411-cpu/dddd/main/project%20C123.meshopt.glb';
 export const PROJECT_C_GLB_REMOTE_PRIMARY_URL =
   'https://raw.githubusercontent.com/dacn3411-cpu/dddd/main/project%20C123.glb';
+/**
+ * 시작 위치 바로 앞(맵 가운데)을 가리던 보급품 묶음: 천막 덮인 화물 상자, 끈, 그 주변에 쌓인 금속 상자.
+ * 맵을 처리하기 전에 빼서 보이지도, 부딪히지도, 총알을 막지도 않게 한다.
+ * (three.js GLTFLoader는 이름의 '.'을 지운다: 'Shard_0_Box-GRP.001' → 'Shard_0_Box-GRP001')
+ */
+export const CENTER_CARGO_PROP_NAMES = [
+  'Tech_0_RebelSupplyCargoDrop_0',
+  'Tech_0_RebelSupplyCargoStraps_0',
+  'Tech_0_RebelSupplyCargoTarpLarge_0',
+  'Tarp_0_AsiteStraps_0',
+  'Shard_0_Box-GRP001',
+  'Box_7_RebelMetalCrateA-GRP001',
+  'Box_7_RebelMetalCrateB-GRP',
+] as const;
+
+/** 맵 가운데 보급품 묶음을 장면에서 떼어 낸다. 떼어 낸 개수를 돌려준다. */
+export function removeCenterCargoProps(root: THREE.Object3D): number {
+  const names = new Set<string>(CENTER_CARGO_PROP_NAMES);
+  const found: THREE.Object3D[] = [];
+  root.traverse((o) => {
+    if (names.has(o.name)) found.push(o);
+  });
+  for (const o of found) o.parent?.remove(o);
+  return found.length;
+}
+
 export const DRACO_DECODER_CDN_URL =
   'https://www.gstatic.com/draco/versioned/decoders/1.5.6/';
 
@@ -2187,6 +2213,7 @@ export function loadProjectCGlbMap(params: {
     const handleLoaded = (gltf: { scene: THREE.Group }) => {
       try {
         onProgress?.(100, '기준 원점(O) · 돌계단 및 2층 창문 방 생성 중... (100%)');
+        removeCenterCargoProps(gltf.scene);
         const runtime = processLoadedGlbScene(gltf.scene, lowQuality);
         dracoLoader.dispose();
         resolve(runtime);

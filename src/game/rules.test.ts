@@ -269,17 +269,19 @@ test('4 Training Modes (MODE 1~4) enforce movement, ±45° vs 360° yaw, spawn r
   // Default mode is MODE 1
   assert.equal(DEFAULT_SETTINGS.trainingMode, 1);
 
-  // MODE 1: Stationary + Front ±45°
-  assert.equal(TRAINING_MODES[1].allowMovement, false);
-  assert.equal(TRAINING_MODES[1].wasdEnabled, false);
+  // MODE 1: 손 조작 · 좌우 ±90° · WASD 이동 가능 (조이스틱은 숨김)
+  assert.equal(TRAINING_MODES[1].allowMovement, true);
+  assert.equal(TRAINING_MODES[1].wasdEnabled, true);
   assert.equal(TRAINING_MODES[1].joystickEnabled, false);
-  assert.equal(TRAINING_MODES[1].maxYawDeg, 45);
+  assert.equal(TRAINING_MODES[1].maxYawDeg, 90);
   assert.equal(TRAINING_MODES[1].allowRearTargets, false);
   assert.equal(TRAINING_MODES[1].allowObstacleAvoidance, false);
-  assert.ok(Math.abs(clampPlayerYawForMode(Math.PI, 1) - Math.PI / 4) < 1e-6);
-  assert.ok(Math.abs(clampPlayerYawForMode(-Math.PI, 1) - -Math.PI / 4) < 1e-6);
+  assert.ok(Math.abs(clampPlayerYawForMode(Math.PI, 1) - Math.PI / 2) < 1e-6);
+  assert.ok(Math.abs(clampPlayerYawForMode(-Math.PI, 1) - -Math.PI / 2) < 1e-6);
   assert.equal(isWorldTargetAllowedForMode(0, 10, 0, -10, 1), true);
-  assert.equal(isWorldTargetAllowedForMode(0, 10, 15, 10, 1), false); // 90 deg side forbidden
+  assert.equal(isWorldTargetAllowedForMode(0, 10, 15, 10, 1), true); // 90 deg side allowed (±90°)
+  assert.equal(isWorldTargetAllowedForMode(0, 10, 15, 12, 1), false); // just behind the side forbidden
+  assert.equal(isWorldTargetAllowedForMode(0, 10, 15, 10, 3), false); // MODE 3 keeps ±45°
   assert.equal(isWorldTargetAllowedForMode(0, 10, 0, 20, 1), false); // rear forbidden
 
   // MODE 2: Stationary + 360° Free Rotation
@@ -313,11 +315,11 @@ test('4 Training Modes (MODE 1~4) enforce movement, ±45° vs 360° yaw, spawn r
   assert.equal(clampPlayerYawForMode(-2.5, 4), -2.5);
   assert.equal(isWorldTargetAllowedForMode(0, 10, -14, 18, 4), true);
 
-  // Stationary modes (MODE 1 & 2) record obstacleAvoidanceRatePct as null (N/A)
+  // MODE 1 (손 조작) allows WASD but has no obstacles, so obstacleAvoidanceRatePct is null (N/A)
   const recMode1 = new SessionRecorder(2, 120, 1).buildSummary(60);
   assert.equal(recMode1.trainingMode, 1);
   assert.equal(recMode1.trainingModeCode, 'MODE 1');
-  assert.equal(recMode1.movementAllowed, false);
+  assert.equal(recMode1.movementAllowed, true);
   assert.equal(recMode1.obstacleAvoidanceRatePct, null);
 
   // Movement modes (MODE 3 & 4) compute obstacleAvoidanceRatePct
@@ -1287,6 +1289,22 @@ test('Project C .glb loader auto-scales map (60~100 core width), aligns dense ce
   assert.ok(PROJECT_C_GLB_PRIMARY_URL.endsWith('assets/models/map/project-c123.glb'));
   assert.ok(!PROJECT_C_GLB_COMPRESSED_URL.includes('githubusercontent'));
   assert.ok(!PROJECT_C_GLB_PRIMARY_URL.includes('githubusercontent'));
+  // the cargo pile in front of the spawn (map centre) is taken out before processing
+  {
+    const { removeCenterCargoProps, CENTER_CARGO_PROP_NAMES } = await import('./glbMapLoader');
+    const root = new THREE.Group();
+    const keep = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+    keep.name = 'Tech_0_CrateRebelSupplyA_2';
+    root.add(keep);
+    for (const name of CENTER_CARGO_PROP_NAMES) {
+      const g = new THREE.Group();
+      g.name = name;
+      g.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1)));
+      root.add(g);
+    }
+    assert.equal(removeCenterCargoProps(root), CENTER_CARGO_PROP_NAMES.length);
+    assert.deepEqual(root.children.map((c) => c.name), ['Tech_0_CrateRebelSupplyA_2']);
+  }
   // remote copies are only a fallback after the bundled files
   const remote = await import('./glbMapLoader');
   assert.ok(remote.PROJECT_C_GLB_REMOTE_COMPRESSED_URL.endsWith('.meshopt.glb'));

@@ -102,7 +102,7 @@ export interface TrainingModeConfig {
   wasdEnabled: boolean;
   joystickEnabled: boolean;
   yawRangeType: 'FRONT_45' | 'FREE_360';
-  maxYawDeg: number | null; // 45 for MODE 1 & 3, null for MODE 2 & 4
+  maxYawDeg: number | null; // MODE 1 (손 조작) 90, MODE 3 45, MODE 2 & 4 null
   maxYawRad: number | null;
   pitchEnabled: boolean;
   allowFrontTargets: boolean;
@@ -118,22 +118,24 @@ export const TRAINING_MODES: Record<TrainingModeId, TrainingModeConfig> = {
   1: {
     id: 1,
     code: 'MODE 1',
-    name: '제자리 고정 + 전방 시야',
-    shortName: '제자리 · 전방 ±45°',
-    allowMovement: false,
-    wasdEnabled: false,
+    // 손 조작 게임의 기본 모드: 제자리에서 손을 화면 가장자리에 두면 좌우 ±90°(180°) 안에서 시점이 돈다.
+    // WASD 이동은 그대로 쓸 수 있고, 화면 조이스틱은 화면을 넓게 쓰려고 숨긴다.
+    name: '손 조작 · 좌우 180°',
+    shortName: '손 조작 · 좌우 180°',
+    allowMovement: true,
+    wasdEnabled: true,
     joystickEnabled: false,
     yawRangeType: 'FRONT_45',
-    maxYawDeg: 45,
-    maxYawRad: Math.PI / 4,
+    maxYawDeg: 90,
+    maxYawRad: Math.PI / 2,
     pitchEnabled: true,
     allowFrontTargets: true,
     allowRearTargets: false,
     allowObstacleAvoidance: false,
-    movementLabel: '불가능 (제자리 고정)',
-    yawRangeLabel: '좌우 ±45° (상하 가능)',
-    spawnRangeLabel: '전방 시야 범위 (±45°)',
-    purposes: ['기본 눈-손 협응', '전방 시각 탐색', '조준 정확도', '목표물 추적'],
+    movementLabel: 'WASD 이동 가능 (기본은 제자리)',
+    yawRangeLabel: '좌우 ±90° (손을 화면 가장자리에)',
+    spawnRangeLabel: '전방·좌우 180° (±90°)',
+    purposes: ['기본 눈-손 협응', '좌우 시각 탐색', '조준 정확도', '목표물 추적'],
   },
   2: {
     id: 2,
@@ -245,10 +247,15 @@ export function isWorldTargetAllowedForMode(
   if (dist < 2.0) return false;
 
   if (!cfg.allowRearTargets) {
-    // MODE 1 & MODE 3: Must be strictly in front of player (-Z direction) within ±45°
-    if (dz >= -1.0) return false;
+    // MODE 1 (±90°) & MODE 3 (±45°): 앞쪽(-Z) 반구에서 모드의 좌우 범위 안만
+    const maxRad = cfg.maxYawRad ?? Math.PI / 4;
+    if (maxRad <= Math.PI / 4 + 1e-6) {
+      if (dz >= -1.0) return false;
+    } else if (dz >= 0.5) {
+      return false;
+    }
     const angleFromFrontRad = Math.abs(Math.atan2(dx, -dz));
-    return angleFromFrontRad <= Math.PI / 4 + 0.02;
+    return angleFromFrontRad <= maxRad + 0.02;
   }
   return true;
 }

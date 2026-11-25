@@ -215,9 +215,9 @@ export function runAllSelfChecks(
     const sumStationary = recStationary.buildSummary(60);
     const mode1Ok =
       sumStationary.trainingMode === 1 &&
-      sumStationary.movementAllowed === false &&
+      sumStationary.movementAllowed === true &&
       sumStationary.obstacleAvoidanceRatePct === null &&
-      Math.abs(clampPlayerYawForMode(Math.PI, 1) - Math.PI / 4) < 1e-5 &&
+      Math.abs(clampPlayerYawForMode(Math.PI, 1) - Math.PI / 2) < 1e-5 &&
       !isWorldTargetAllowedForMode(0, 10, 0, 20, 1) &&
       isWorldTargetAllowedForMode(0, 10, 2, -10, 1);
 

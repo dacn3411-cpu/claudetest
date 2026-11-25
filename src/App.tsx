@@ -88,9 +88,10 @@ import {
   TrainingModeId,
 } from './game/rules';
 import { soundEngine } from './game/audio';
-
-// 손 치료 모드(웹캠 손 추적)는 열 때만 불러온다 — 3D 게임만 쓸 때 MediaPipe를 받지 않도록
-const HandTherapyMode = React.lazy(() => import('./hand/HandTherapyMode'));
+import HandTestPanel, { primaryHand } from './hand/HandTestPanel';
+import { HandTracker, type HandFrame, type TrackerStatus } from './hand/handTracker';
+import { DwellFire, HAND_LEVEL_COUNT, edgeYawRate, edgeZone, handTipToNdc } from './hand/handControl';
+import { DEFAULT_CALIBRATION, OneEuroFilter2D, type ReachCalibration } from './hand/handRules';
 import { buildArenaWorld, BuiltArenaWorld } from './game/worldBuilder';
 import {
   LoadedGlbMapRuntime,
@@ -203,9 +204,18 @@ export default function App() {
 
   // Modals
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [showHandMode, setShowHandMode] = useState(false);
-  const handModeOpenRef = useRef(false);
-  handModeOpenRef.current = showHandMode;
+  // ── 손 조작: 웹캠 손 추적 → 조준·가장자리 회전·0.5초 명중 ──
+  const handTrackerRef = useRef<HandTracker | null>(null);
+  const handFrameRef = useRef<HandFrame | null>(null);
+  const [handStatus, setHandStatus] = useState<TrackerStatus>({ kind: 'idle' });
+  const [handTestPassed, setHandTestPassed] = useState(false);
+  const handTestPassedRef = useRef(false);
+  handTestPassedRef.current = handTestPassed;
+  const handCalRef = useRef<ReachCalibration>(DEFAULT_CALIBRATION);
+  const handCursorRef = useRef<HTMLDivElement | null>(null);
+  const handRingRef = useRef<SVGCircleElement | null>(null);
+  const handEdgeLeftRef = useRef<HTMLDivElement | null>(null);
+  const handEdgeRightRef = useRef<HTMLDivElement | null>(null);
   const [guideModalTab, setGuideModalTab] = useState<'guide' | 'controls' | null>(null);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [inspectRecord, setInspectRecord] = useState<SessionRecordSummary | null>(null);
@@ -477,6 +487,106 @@ export default function App() {
     document.body.dataset.state = stateMap[phase];
   }, [phase]);
 
+  // ── 손 조작: 카메라 켜기, 테스트 통과, 게임 중 조작 루프 ──
+  const startHandCamera = () => {
+    handTrackerRef.current?.stop();
+    const tracker = new HandTracker(
+      (f) => {
+        handFrameRef.current = f;
+      },
+      (st) => setHandStatus(st),
+    );
+    handTrackerRef.current = tracker;
+    void tracker.start();
+  };
+
+  useEffect(
+    () => () => {
+      handTrackerRef.current?.stop();
+      handTrackerRef.current = null;
+    },
+    [],
+  );
+
+  // 손 조작 게임은 모드 선택 없이 MODE 1(제자리·좌우 180°·WASD)과 1~5단계만 쓴다
+  useEffect(() => {
+    const cur = settingsRef.current;
+    if ((cur.trainingMode ?? 1) !== 1 || cur.difficulty > HAND_LEVEL_COUNT) {
+      updateSettings({ trainingMode: 1, difficulty: Math.min(cur.difficulty, HAND_LEVEL_COUNT) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const filter = new OneEuroFilter2D(1.0, 0.03);
+    const dwell = new DwellFire();
+    let raf = 0;
+    let last = performance.now();
+    let lostSec = 0;
+    const hideCursor = () => {
+      if (handCursorRef.current) handCursorRef.current.style.opacity = '0';
+      if (handEdgeLeftRef.current) handEdgeLeftRef.current.style.opacity = '0';
+      if (handEdgeRightRef.current) handEdgeRightRef.current.style.opacity = '0';
+    };
+    const loop = () => {
+      raf = requestAnimationFrame(loop);
+      const now = performance.now();
+      const dt = Math.min(0.25, (now - last) / 1000);
+      last = now;
+      if (phaseRef.current !== 'PLAYING' || !handTestPassedRef.current) {
+        hideCursor();
+        filter.reset();
+        dwell.reset();
+        lostSec = 0;
+        return;
+      }
+      const hand = primaryHand(handFrameRef.current);
+      if (!hand) {
+        hideCursor();
+        dwell.update(null, dt);
+        lostSec += dt;
+        if (lostSec > 0.8 && inputStateRef.current.laserDragTargetId) releaseLaserTrackDragRef.current();
+        return;
+      }
+      lostSec = 0;
+      const ndc = filter.filter(handTipToNdc(hand.tip, handCalRef.current), now / 1000);
+
+      // 가장자리 회전: 제자리에서 좌우 ±90° 안
+      const rate = edgeYawRate(ndc.x);
+      if (rate !== 0) {
+        const ps = playerStateRef.current;
+        ps.yaw = clampPlayerYawForMode(ps.yaw + rate * dt, 1, ps.x, ps.z);
+      }
+
+      // 레이저 트랙: 시작점에서 0.5초 → 따라 그리기 시작, 손가락으로 이어서 그린다
+      if (inputStateRef.current.laserDragTargetId) {
+        handleLaserTrackDragStepRef.current(ndc.x, ndc.y, false);
+        dwell.reset();
+      } else {
+        const onTarget = probeDirectTouchTargetRef.current(ndc.x, ndc.y);
+        if (dwell.update(onTarget, dt)) {
+          shootFnRef.current({ ndcX: ndc.x, ndcY: ndc.y, isDirectTouch: true });
+        }
+      }
+
+      // 화면 커서와 가장자리 표시
+      const el = handCursorRef.current;
+      if (el) {
+        el.style.opacity = '1';
+        el.style.transform = `translate(${((ndc.x + 1) / 2) * window.innerWidth}px, ${((1 - ndc.y) / 2) * window.innerHeight}px)`;
+      }
+      if (handRingRef.current) {
+        const c = 2 * Math.PI * 26;
+        handRingRef.current.style.strokeDashoffset = String(c * (1 - dwell.progress));
+      }
+      const zone = edgeZone(ndc.x);
+      if (handEdgeLeftRef.current) handEdgeLeftRef.current.style.opacity = zone === 'left' ? '1' : '0';
+      if (handEdgeRightRef.current) handEdgeRightRef.current.style.opacity = zone === 'right' ? '1' : '0';
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   // Save settings helper (synchronously updates settingsRef.current so immediate startTrainingSession sees latest mode/difficulty)
   const updateSettings = (partial: Partial<GameSettings>) => {
     const syncNext = { ...settingsRef.current, ...partial };
@@ -586,7 +696,8 @@ export default function App() {
       }
 
       const calcVerticalFov = (aspect: number) => {
-        const hFovRad = THREE.MathUtils.degToRad(90);
+        // 손 조작 게임은 좌우를 넓게 보도록 수평 시야 100°
+        const hFovRad = THREE.MathUtils.degToRad(100);
         const vFovRad = 2 * Math.atan(Math.tan(hFovRad * 0.5) / Math.max(0.5, aspect));
         return THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(vFovRad), 50, 100);
       };
@@ -1702,6 +1813,37 @@ export default function App() {
       };
 
       (window as unknown as Record<string, unknown>).__ehmDebug = {
+        // 화면 한 점(NDC)에 처음 맞는 물체와 그 부모 이름들 (맵 소품 찾기용)
+        pickAt: (ndcX: number, ndcY: number) => {
+          const rc = new THREE.Raycaster();
+          rc.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+          const hits = rc.intersectObjects(scene.children, true).filter((h) => h.object.visible);
+          return hits.slice(0, 6).map((h) => {
+            const chain: string[] = [];
+            let o: THREE.Object3D | null = h.object;
+            while (o && chain.length < 8) {
+              chain.push(o.name || o.type);
+              o = o.parent;
+            }
+            return { dist: Number(h.distance.toFixed(2)), chain };
+          });
+        },
+        // 자동 테스트용: 손 추적이 켜진 것처럼 만들고, 검지 끝 위치(거울 화면 이미지 좌표)를 넣는다
+        handFakeRunning: () => setHandStatus({ kind: 'running' }),
+        handInject: (x: number, y: number) => {
+          const landmarks = Array.from({ length: 21 }, (_, i) => ({
+            x: x + Math.sin(i) * 0.03,
+            y: y + 0.02 + (i / 20) * 0.12,
+          }));
+          landmarks[8] = { x, y };
+          handFrameRef.current = {
+            // 테스트 환경이 느려도 손이 계속 보이도록 시각을 앞으로 둔다 (자동 테스트 전용)
+            tMs: performance.now() + 1e7,
+            hands: [{ side: 'R', tip: { x, y }, size: 0.15, pinchDist: 0.08, landmarks, score: 1 }],
+          };
+        },
+        getHandCalibration: () => ({ ...handCalRef.current }),
+        probeAt: (ndcX: number, ndcY: number) => probeDirectTouchTargetRef.current(ndcX, ndcY),
         getPlayerState: () => ({ ...playerStateRef.current }),
         getSettings: () => ({ ...settingsRef.current }),
         rotateYawBy: (deltaRad: number) => {
@@ -1872,12 +2014,6 @@ export default function App() {
       };
 
       const stepFrame = () => {
-        if (handModeOpenRef.current) {
-          // 손 치료 모드가 화면을 덮는 동안 3D 렌더링을 쉬어 손 추적에 CPU/GPU를 양보한다
-          lastTimeMs = performance.now();
-          frameId = window.setTimeout(stepFrame, 250);
-          return;
-        }
         const nowMs = performance.now();
         const rawDt = (nowMs - lastTimeMs) / 1000;
         lastTimeMs = nowMs;
@@ -2810,7 +2946,6 @@ export default function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       unlockWeaponAudio();
       const code = resolveKeyCode(e);
-      if (handModeOpenRef.current) return;
       if (weaponModalOpenRef.current) {
         if (code === 'Escape' || code === 'KeyB' || e.key === 'ㅠ') {
           e.preventDefault();
@@ -2826,7 +2961,13 @@ export default function App() {
       if (k === 'd' || k === 'ㅇ') inputStateRef.current.keys.KeyD = true;
 
       if (phaseRef.current === 'MENU' && (code === 'Enter' || code === 'Space')) {
-        if (!showSettingsModal && !guideModalTab && !showHistoryModal && !selfCheckItems) {
+        if (
+          handTestPassedRef.current &&
+          !showSettingsModal &&
+          !guideModalTab &&
+          !showHistoryModal &&
+          !selfCheckItems
+        ) {
           e.preventDefault();
           startTrainingSession();
         }
@@ -3006,7 +3147,8 @@ export default function App() {
   }, [dragModeBanner, guideModalTab, selfCheckItems, showHistoryModal, showSettingsModal]);
 
   const requestArenaPointerLock = () => {
-    if (isTabletRef.current) return;
+    // 손으로 조준하므로 마우스를 화면에 가두지 않는다
+    if (isTabletRef.current || handTestPassedRef.current) return;
     const canvas = mountRef.current?.querySelector('canvas');
     if (!canvas || !canvas.requestPointerLock) {
       setDragModeBanner(true);
@@ -3762,218 +3904,35 @@ export default function App() {
                 boxShadow: `0 8px 32px rgba(15, 25, 35, 0.55), inset 0 0 0 2px ${PALETTE.primaryPurple}`,
               }}
             >
-              {/* Section 2: 4 Training Mode Selection Cards (MODE 1 ~ MODE 4) */}
-              <div className="mb-3.5" data-testid="training-mode-selector">
-                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                  <span
-                    className="text-xs sm:text-sm font-extrabold"
-                    style={{ color: PALETTE.darkPurple }}
-                  >
-                    훈련 모드 선택 (4가지 이동 및 시야 회전 모드)
-                  </span>
-                  <span
-                    data-testid="selected-mode-summary-pill"
-                    className="text-xs font-extrabold px-2.5 py-0.5 rounded-full"
-                    style={{ backgroundColor: PALETTE.primaryPurple, color: '#FFFFFF' }}
-                  >
-                    현재 선택: {TRAINING_MODES[settings.trainingMode ?? 1].code} ·{' '}
-                    {TRAINING_MODES[settings.trainingMode ?? 1].name}
-                  </span>
-                </div>
+              {/* 손 인식 테스트: 통과해야 게임 시작 버튼이 켜진다 (모드 선택 없음) */}
+              <HandTestPanel
+                frameRef={handFrameRef}
+                status={handStatus}
+                passed={handTestPassed}
+                onStartCamera={startHandCamera}
+                onPassed={(cal) => {
+                  handCalRef.current = cal;
+                  setHandTestPassed(true);
+                }}
+                onRetest={() => setHandTestPassed(false)}
+              />
 
-                <div
-                  className={`grid gap-2 ${
-                    viewport.isShortLandscape
-                      ? 'grid-cols-4'
-                      : 'grid-cols-2 lg:grid-cols-4 sm:gap-2.5'
-                  }`}
-                >
-                  {([1, 2, 3, 4] as TrainingModeId[]).map((mId) => {
-                    const mCfg = TRAINING_MODES[mId];
-                    const selected = (settings.trainingMode ?? 1) === mId;
-                    return (
-                      <button
-                        key={mId}
-                        type="button"
-                        data-testid={`training-mode-card-${mId}`}
-                        data-selected={selected ? 'true' : 'false'}
-                        aria-pressed={selected}
-                        onClick={() => updateSettings({ trainingMode: mId })}
-                        className="rounded-2xl p-2.5 sm:p-3 text-left transition-all flex flex-col justify-between relative"
-                        style={{
-                          backgroundColor: selected ? '#F2ECFF' : '#FFFFFF',
-                          border: selected
-                            ? `3px solid ${PALETTE.primaryPurple}`
-                            : '2px solid #D8CEFF',
-                          boxShadow: selected
-                            ? `0 4px 0 ${PALETTE.darkPurple}, 0 0 0 2px ${PALETTE.cyan}`
-                            : '0 2px 0 rgba(43,42,94,0.12)',
-                        }}
-                      >
-                        <div>
-                          {/* Header: Mode Number + Checkmark Badge */}
-                          <div className="flex items-center justify-between gap-1 mb-1">
-                            <span
-                              className="px-2 py-0.5 rounded-lg text-[11px] font-black tracking-wide"
-                              style={{
-                                backgroundColor: selected ? PALETTE.primaryPurple : '#EDE6FA',
-                                color: selected ? '#FFFFFF' : PALETTE.darkPurple,
-                              }}
-                            >
-                              {mCfg.code}
-                            </span>
-                            {selected ? (
-                              <span
-                                data-testid={`training-mode-check-${mId}`}
-                                className="px-2 py-0.5 rounded-full text-[11px] font-black flex items-center gap-0.5"
-                                style={{
-                                  backgroundColor: PALETTE.cyan,
-                                  color: PALETTE.darkPurple,
-                                  border: `1.5px solid ${PALETTE.darkPurple}`,
-                                }}
-                              >
-                                ✓ 선택됨
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-bold text-slate-400">선택</span>
-                            )}
-                          </div>
-
-                          {/* Mode Name */}
-                          <div
-                            className="text-xs sm:text-sm font-black leading-snug mb-1.5"
-                            style={{ color: PALETTE.darkPurple }}
-                          >
-                            {mCfg.name}
-                          </div>
-
-                          {/* 3D / Radar Visual Preview Schematic + Info Row */}
-                          <div className="flex items-center gap-2.5 mb-2">
-                            <svg
-                              width="54"
-                              height="54"
-                              viewBox="-28 -28 56 56"
-                              className="shrink-0 rounded-xl border border-purple-200"
-                              style={{ backgroundColor: '#1E1D42' }}
-                              aria-label={`${mCfg.code} 3D 시야 및 이동 미리보기`}
-                            >
-                              {/* Arena ring */}
-                              <circle
-                                cx="0"
-                                cy="0"
-                                r="23"
-                                fill="none"
-                                stroke="rgba(205,184,255,0.28)"
-                                strokeWidth="1"
-                                strokeDasharray="2 2"
-                              />
-                              {/* FOV Visualization: ±45° front cone vs 360° full radar */}
-                              {mCfg.yawRangeType === 'FRONT_45' ? (
-                                <path
-                                  d="M 0 4 L -17 -15 A 22 22 0 0 1 17 -15 Z"
-                                  fill="rgba(45, 226, 230, 0.34)"
-                                  stroke={PALETTE.cyan}
-                                  strokeWidth="1.4"
-                                />
-                              ) : (
-                                <circle
-                                  cx="0"
-                                  cy="0"
-                                  r="19"
-                                  fill="rgba(45, 226, 230, 0.22)"
-                                  stroke={PALETTE.cyan}
-                                  strokeWidth="1.4"
-                                />
-                              )}
-                              {/* Sample Target Dots */}
-                              <circle cx="-7" cy="-13" r="3" fill={PALETTE.cyan} />
-                              <circle cx="8" cy="-12" r="2.8" fill={PALETTE.orange} />
-                              {mCfg.allowRearTargets && (
-                                <>
-                                  <circle cx="-14" cy="4" r="2.8" fill={PALETTE.magenta} />
-                                  <circle cx="13" cy="8" r="2.8" fill={PALETTE.lime} />
-                                  <circle cx="0" cy="15" r="3" fill={PALETTE.yellow} />
-                                </>
-                              )}
-                              {/* Movement Arrows if allowMovement */}
-                              {mCfg.allowMovement ? (
-                                <g stroke="#FFFFFF" strokeWidth="1.5" strokeLinecap="round">
-                                  <line x1="0" y1="-6" x2="0" y2="6" />
-                                  <line x1="-6" y1="0" x2="6" y2="0" />
-                                  <circle cx="0" cy="0" r="3.2" fill={PALETTE.orange} />
-                                </g>
-                              ) : (
-                                <circle
-                                  cx="0"
-                                  cy="4"
-                                  r="3.8"
-                                  fill="#FFFFFF"
-                                  stroke={PALETTE.primaryPurple}
-                                  strokeWidth="1.8"
-                                />
-                              )}
-                            </svg>
-
-                            <div className="text-[11px] leading-tight space-y-0.5 text-slate-700 font-bold">
-                              <div>
-                                이동:{' '}
-                                <span
-                                  style={{
-                                    color: mCfg.allowMovement
-                                      ? PALETTE.primaryPurple
-                                      : '#64748B',
-                                  }}
-                                >
-                                  {mCfg.allowMovement ? '자유 이동 가능' : '불가능 (제자리)'}
-                                </span>
-                              </div>
-                              <div>
-                                시야: <span className="text-purple-950">{mCfg.yawRangeLabel}</span>
-                              </div>
-                              <div>
-                                출현: <span className="text-purple-950">{mCfg.spawnRangeLabel}</span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Training Purposes Tags */}
-                        <div className="pt-1.5 border-t border-purple-200/70 flex flex-wrap gap-1">
-                          {mCfg.purposes.slice(0, 4).map((p) => (
-                            <span
-                              key={p}
-                              className="px-1.5 py-0.5 rounded text-[10px] font-extrabold"
-                              style={{
-                                backgroundColor: selected ? '#FFFFFF' : '#F3EEFF',
-                                color: PALETTE.darkPurple,
-                              }}
-                            >
-                              {p}
-                            </span>
-                          ))}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Difficulty 1~10 Selector */}
+              {/* Difficulty 1~5 Selector */}
               <div className="mb-3">
                 <div className="flex items-center justify-between mb-1">
                   <span
                     className="text-xs sm:text-sm font-extrabold"
                     style={{ color: PALETTE.darkPurple }}
                   >
-                    훈련 난이도 선택 (1 ~ 10단계)
+                    훈련 난이도 선택 (1 ~ {HAND_LEVEL_COUNT}단계)
                   </span>
                   <span className="text-xs font-bold text-purple-700">
-                    훈련 시간: {settings.duration}초 · {TRAINING_MODES[settings.trainingMode ?? 1].shortName}
+                    훈련 시간: {settings.duration}초 · 손 조작 · 좌우 180° · WASD 이동
                   </span>
                 </div>
 
-                <div className="grid grid-cols-5 sm:grid-cols-10 gap-1.5">
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((lv) => {
+                <div className="grid grid-cols-5 gap-1.5">
+                  {Array.from({ length: HAND_LEVEL_COUNT }, (_, i) => i + 1).map((lv) => {
                     const active = settings.difficulty === lv;
                     return (
                       <button
@@ -4014,31 +3973,20 @@ export default function App() {
                 <button
                   type="button"
                   data-start="true"
+                  disabled={!handTestPassed}
                   onClick={() => {
+                    if (!handTestPassedRef.current) return;
                     unlockWeaponAudio();
-                    startTrainingSession();
+                    startTrainingSession(undefined, false, 1);
                   }}
-                  className="sm:flex-1 min-h-12 py-2.5 px-5 rounded-2xl font-black text-base sm:text-lg text-white tracking-wide transition-transform active:translate-y-0.5"
+                  className="sm:flex-1 min-h-12 py-2.5 px-5 rounded-2xl font-black text-base sm:text-lg text-white tracking-wide transition-transform active:translate-y-0.5 disabled:cursor-not-allowed"
                   style={{
-                    backgroundColor: PALETTE.orange,
+                    backgroundColor: handTestPassed ? PALETTE.orange : '#B8B2C8',
                     border: `2px solid ${PALETTE.darkPurple}`,
                     boxShadow: `0 4px 0 ${PALETTE.darkPurple}`,
                   }}
                 >
-                  게임 시작 ({TRAINING_MODES[settings.trainingMode ?? 1].code} · LV.{settings.difficulty})
-                </button>
-                <button
-                  type="button"
-                  data-testid="open-hand-mode"
-                  onClick={() => setShowHandMode(true)}
-                  className="sm:flex-1 min-h-12 py-2.5 px-5 rounded-2xl font-black text-base sm:text-lg text-white tracking-wide transition-transform active:translate-y-0.5"
-                  style={{
-                    backgroundColor: '#0EA5E9',
-                    border: `2px solid ${PALETTE.darkPurple}`,
-                    boxShadow: `0 4px 0 ${PALETTE.darkPurple}`,
-                  }}
-                >
-                  손 치료 모드 (웹캠)
+                  {handTestPassed ? `게임 시작 (LV.${settings.difficulty})` : '손 인식 테스트를 먼저 통과해요'}
                 </button>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 sm:gap-2 sm:w-auto">
@@ -5097,6 +5045,7 @@ export default function App() {
       {phase === 'PLAYING' && !isWeaponModalOpen && (
         <>
           <SniperScopeOverlay visible={weaponHud.isScoped} />
+          {!handTestPassed && (
           <WeaponHudBar
             hud={weaponHud}
             layoutMode={
@@ -5123,18 +5072,46 @@ export default function App() {
               weaponRigRef.current?.toggleAds();
             }}
           />
+          )}
         </>
       )}
-      {showHandMode && (
-        <React.Suspense
-          fallback={
-            <div className="fixed inset-0 z-[200] flex items-center justify-center bg-sky-50 text-slate-600 font-black">
-              손 치료 모드를 여는 중…
-            </div>
-          }
-        >
-          <HandTherapyMode onExit={() => setShowHandMode(false)} />
-        </React.Suspense>
+      {/* 손 조작 커서 (검지 끝) + 가장자리 회전 표시. 위치는 매 프레임 ref로 바꾼다 */}
+      {phase === 'PLAYING' && handTestPassed && (
+        <div className="fixed inset-0 z-40 pointer-events-none" data-testid="hand-cursor-layer">
+          <div
+            ref={handEdgeLeftRef}
+            className="absolute left-0 top-0 h-full w-[11%] transition-opacity duration-150 flex items-center justify-start pl-3 text-5xl font-black text-white"
+            style={{ opacity: 0, background: 'linear-gradient(90deg, rgba(14,165,233,0.45), rgba(14,165,233,0))' }}
+          >
+            ◀
+          </div>
+          <div
+            ref={handEdgeRightRef}
+            className="absolute right-0 top-0 h-full w-[11%] transition-opacity duration-150 flex items-center justify-end pr-3 text-5xl font-black text-white"
+            style={{ opacity: 0, background: 'linear-gradient(270deg, rgba(14,165,233,0.45), rgba(14,165,233,0))' }}
+          >
+            ▶
+          </div>
+          <div ref={handCursorRef} className="absolute left-0 top-0" style={{ opacity: 0, willChange: 'transform' }}>
+            <svg width="64" height="64" viewBox="0 0 64 64" style={{ transform: 'translate(-32px, -32px)' }}>
+              <circle cx="32" cy="32" r="26" fill="rgba(255,255,255,0.18)" stroke="rgba(255,255,255,0.85)" strokeWidth="3" />
+              <circle
+                ref={handRingRef}
+                cx="32"
+                cy="32"
+                r="26"
+                fill="none"
+                stroke="#F59E0B"
+                strokeWidth="6"
+                strokeLinecap="round"
+                strokeDasharray={String(2 * Math.PI * 26)}
+                strokeDashoffset={String(2 * Math.PI * 26)}
+                transform="rotate(-90 32 32)"
+              />
+              <circle cx="32" cy="32" r="7" fill="#0EA5E9" stroke="#FFFFFF" strokeWidth="3" />
+            </svg>
+          </div>
+        </div>
       )}
       {isWeaponModalOpen && (
         <WeaponSelectModal

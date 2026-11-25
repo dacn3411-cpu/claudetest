@@ -637,16 +637,20 @@ export class TargetAndObstacleManager {
         ),
       );
 
-      if (isStationaryMode) {
+      // 제자리 모드와 손 조작 모드(MODE 1): 지금 서 있는 곳에서 보이는 위치에만 과녁을 둔다
+      if (isStationaryMode || modeId === 1) {
         candidates = candidates.filter((a) =>
           this.hasLineOfSight(eyeOrigin, new THREE.Vector3(a.x, a.y, a.z)),
         );
       }
 
       if (!allow360) {
-        // MODE 1 & MODE 3: Strictly FRONT sector and within ±45° cone from player
+        // MODE 3: FRONT sector within ±45°. MODE 1 (손 조작, ±90°): FRONT + LEFT/RIGHT within ±90°
+        const wide = (modeCfg.maxYawDeg ?? 45) > 45;
         candidates = candidates.filter(
-          (a) => a.sector === 'FRONT' && isWorldTargetAllowedForMode(px, pz, a.x, a.z, modeId),
+          (a) =>
+            (a.sector === 'FRONT' || (wide && (a.sector === 'LEFT' || a.sector === 'RIGHT'))) &&
+            isWorldTargetAllowedForMode(px, pz, a.x, a.z, modeId),
         );
       } else if (wantRearOrSide) {
         const rearOrSide = candidates.filter((a) => a.sector !== 'FRONT');
@@ -1469,18 +1473,28 @@ export class TargetAndObstacleManager {
         t.visual.missionBracketMesh.scale.setScalar(bracketState.scaleMul);
       }
 
-      // In MODE 1 & MODE 3 (front ±45° only), keep moving targets inside the forward ±45° cone
+      // Front-only modes keep moving targets inside the mode's yaw range
       if (!modeCfg.allowRearTargets && t.typeId !== 'H') {
         const camX = params.camera.position.x;
         const camZ = params.camera.position.z;
-        const depth = Math.max(5.0, camZ - pos.z);
-        const maxFrontX = Math.min(13.5, depth * Math.tan(THREE.MathUtils.degToRad(41)));
-        if (pos.x < camX - maxFrontX) {
-          pos.x = camX - maxFrontX;
-          t.moveDirX = 1;
-        } else if (pos.x > camX + maxFrontX) {
-          pos.x = camX + maxFrontX;
-          t.moveDirX = -1;
+        const maxYawDeg = modeCfg.maxYawDeg ?? 45;
+        if (maxYawDeg <= 45) {
+          // MODE 3: forward ±45° cone
+          const depth = Math.max(5.0, camZ - pos.z);
+          const maxFrontX = Math.min(13.5, depth * Math.tan(THREE.MathUtils.degToRad(maxYawDeg - 4)));
+          if (pos.x < camX - maxFrontX) {
+            pos.x = camX - maxFrontX;
+            t.moveDirX = 1;
+          } else if (pos.x > camX + maxFrontX) {
+            pos.x = camX + maxFrontX;
+            t.moveDirX = -1;
+          }
+        } else {
+          // MODE 1 (±90°): turn a side-moving target back before it drifts behind the player
+          const ang = Math.atan2(pos.x - camX, camZ - pos.z);
+          const lim = THREE.MathUtils.degToRad(maxYawDeg - 6);
+          if (ang > lim && t.moveDirX > 0) t.moveDirX = -1;
+          else if (ang < -lim && t.moveDirX < 0) t.moveDirX = 1;
         }
       }
 
