@@ -22,6 +22,14 @@ export const PROJECT_C_GLB_COMPRESSED_URL = MAP_BASE + 'project-c123.meshopt.glb
 const PROJECT_C_GLB_COMPRESSED_BYTES = 16556024;
 const PROJECT_C_GLB_ORIGINAL_BYTES = 51749776;
 export const PROJECT_C_GLB_PRIMARY_URL = MAP_BASE + 'project-c123.glb';
+/**
+ * 예비 주소: 프로젝트 안의 맵 파일을 못 읽을 때만 쓴다.
+ * (AI 스튜디오로 가져오면 큰 맵 파일이 빠지거나 미리보기에서 열리지 않을 수 있다)
+ */
+export const PROJECT_C_GLB_REMOTE_COMPRESSED_URL =
+  'https://raw.githubusercontent.com/dacn3411-cpu/dddd/main/project%20C123.meshopt.glb';
+export const PROJECT_C_GLB_REMOTE_PRIMARY_URL =
+  'https://raw.githubusercontent.com/dacn3411-cpu/dddd/main/project%20C123.glb';
 export const DRACO_DECODER_CDN_URL =
   'https://www.gstatic.com/draco/versioned/decoders/1.5.6/';
 
@@ -2194,12 +2202,15 @@ export function loadProjectCGlbMap(params: {
     const cacheBust = `cb=${Date.now()}`;
     // The compressed file has its own name, so it can use the browser cache (revalidated by ETag) and a
     // second visit doesn't download it again; the original files keep the old always-fresh behaviour.
+    // 프로젝트 안의 파일(압축본 → 원본)을 먼저, 그다음 외부 예비 주소(압축본 → 원본)
     const urls = [
       `${PROJECT_C_GLB_COMPRESSED_URL}?v=1`,
       `${PROJECT_C_GLB_PRIMARY_URL}?${cacheBust}`,
+      `${PROJECT_C_GLB_REMOTE_COMPRESSED_URL}?v=1`,
+      `${PROJECT_C_GLB_REMOTE_PRIMARY_URL}?${cacheBust}`,
     ];
     const tryLoad = (i: number) => {
-      estimatedTotal = i === 0 ? PROJECT_C_GLB_COMPRESSED_BYTES : PROJECT_C_GLB_ORIGINAL_BYTES;
+      estimatedTotal = i % 2 === 0 ? PROJECT_C_GLB_COMPRESSED_BYTES : PROJECT_C_GLB_ORIGINAL_BYTES;
       gltfLoader.load(urls[i], handleLoaded, handleProgress, (err) => {
         if (i + 1 < urls.length) {
           tryLoad(i + 1);

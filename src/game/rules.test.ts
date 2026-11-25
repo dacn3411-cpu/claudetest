@@ -1287,6 +1287,10 @@ test('Project C .glb loader auto-scales map (60~100 core width), aligns dense ce
   assert.ok(PROJECT_C_GLB_PRIMARY_URL.endsWith('assets/models/map/project-c123.glb'));
   assert.ok(!PROJECT_C_GLB_COMPRESSED_URL.includes('githubusercontent'));
   assert.ok(!PROJECT_C_GLB_PRIMARY_URL.includes('githubusercontent'));
+  // remote copies are only a fallback after the bundled files
+  const remote = await import('./glbMapLoader');
+  assert.ok(remote.PROJECT_C_GLB_REMOTE_COMPRESSED_URL.endsWith('.meshopt.glb'));
+  assert.ok(remote.PROJECT_C_GLB_REMOTE_PRIMARY_URL.startsWith('https://'));
   const correctedMat = lowRoof.material as THREE.MeshStandardMaterial;
   assert.equal(correctedMat.side, THREE.DoubleSide);
   assert.equal(correctedMat.emissive.getHex(), 0x000000);
