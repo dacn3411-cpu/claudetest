@@ -88,6 +88,9 @@ import {
   TrainingModeId,
 } from './game/rules';
 import { soundEngine } from './game/audio';
+
+// 손 치료 모드(웹캠 손 추적)는 열 때만 불러온다 — 3D 게임만 쓸 때 MediaPipe를 받지 않도록
+const HandTherapyMode = React.lazy(() => import('./hand/HandTherapyMode'));
 import { buildArenaWorld, BuiltArenaWorld } from './game/worldBuilder';
 import {
   LoadedGlbMapRuntime,
@@ -200,6 +203,9 @@ export default function App() {
 
   // Modals
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showHandMode, setShowHandMode] = useState(false);
+  const handModeOpenRef = useRef(false);
+  handModeOpenRef.current = showHandMode;
   const [guideModalTab, setGuideModalTab] = useState<'guide' | 'controls' | null>(null);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [inspectRecord, setInspectRecord] = useState<SessionRecordSummary | null>(null);
@@ -1866,6 +1872,12 @@ export default function App() {
       };
 
       const stepFrame = () => {
+        if (handModeOpenRef.current) {
+          // 손 치료 모드가 화면을 덮는 동안 3D 렌더링을 쉬어 손 추적에 CPU/GPU를 양보한다
+          lastTimeMs = performance.now();
+          frameId = window.setTimeout(stepFrame, 250);
+          return;
+        }
         const nowMs = performance.now();
         const rawDt = (nowMs - lastTimeMs) / 1000;
         lastTimeMs = nowMs;
@@ -2798,6 +2810,7 @@ export default function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       unlockWeaponAudio();
       const code = resolveKeyCode(e);
+      if (handModeOpenRef.current) return;
       if (weaponModalOpenRef.current) {
         if (code === 'Escape' || code === 'KeyB' || e.key === 'ㅠ') {
           e.preventDefault();
@@ -4014,6 +4027,19 @@ export default function App() {
                 >
                   게임 시작 ({TRAINING_MODES[settings.trainingMode ?? 1].code} · LV.{settings.difficulty})
                 </button>
+                <button
+                  type="button"
+                  data-testid="open-hand-mode"
+                  onClick={() => setShowHandMode(true)}
+                  className="sm:flex-1 min-h-12 py-2.5 px-5 rounded-2xl font-black text-base sm:text-lg text-white tracking-wide transition-transform active:translate-y-0.5"
+                  style={{
+                    backgroundColor: '#0EA5E9',
+                    border: `2px solid ${PALETTE.darkPurple}`,
+                    boxShadow: `0 4px 0 ${PALETTE.darkPurple}`,
+                  }}
+                >
+                  손 치료 모드 (웹캠)
+                </button>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 sm:gap-2 sm:w-auto">
                   <button
@@ -5098,6 +5124,17 @@ export default function App() {
             }}
           />
         </>
+      )}
+      {showHandMode && (
+        <React.Suspense
+          fallback={
+            <div className="fixed inset-0 z-[200] flex items-center justify-center bg-sky-50 text-slate-600 font-black">
+              손 치료 모드를 여는 중…
+            </div>
+          }
+        >
+          <HandTherapyMode onExit={() => setShowHandMode(false)} />
+        </React.Suspense>
       )}
       {isWeaponModalOpen && (
         <WeaponSelectModal
