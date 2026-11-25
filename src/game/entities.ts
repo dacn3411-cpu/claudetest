@@ -1461,7 +1461,7 @@ export class TargetAndObstacleManager {
         }
       }
 
-      // Update Type G 3D red Valorant corner bracket [ ] MOT visibility (Lv 1~7 always on; Lv 8~10 1.0s flash then fade-out)
+      // Update Type G 3D red Valorant corner bracket [ ] MOT visibility (Lv 1~4 always on; Lv 5~10 1.0s cue then fade-out — see computeMissionBracketVisualState)
       if (t.typeId === 'G' && t.isMissionCorrect && t.visual.missionBracketMesh && t.visual.missionBracketMat) {
         const bracketState = computeMissionBracketVisualState(t.difficulty, t.age);
         t.visual.missionBracketMesh.visible = bracketState.visible;

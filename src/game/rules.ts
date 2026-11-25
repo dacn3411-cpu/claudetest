@@ -1059,6 +1059,28 @@ export function evaluateContinuousLaserDragProgress(params: {
 }
 
 /**
+ * H형 레이저 트랙 완주 판정: 드래그 중 경로에서 벗어난 평균 거리(허용 폭 대비 비율 0~1)로
+ * PERFECT/GOOD을 나누고, 조준 오차율(%)과 경로 정확도(%)를 함께 돌려준다.
+ * - 평균 이탈 ≤ 35% → PERFECT, 그 외 → GOOD
+ * - 경로 정확도 = 100 − 평균 이탈(%)
+ */
+export const LASER_TRACE_PERFECT_MAX_DEVIATION = 0.35;
+
+export function gradeLaserTrace(meanRelDeviation: number): {
+  grade: 'PERFECT' | 'GOOD';
+  aimErrorPct: number;
+  pathAccuracyPct: number;
+} {
+  const rel = Number.isFinite(meanRelDeviation) ? Math.max(0, Math.min(1, meanRelDeviation)) : 1;
+  const aimErrorPct = Math.round(rel * 100);
+  return {
+    grade: rel <= LASER_TRACE_PERFECT_MAX_DEVIATION ? 'PERFECT' : 'GOOD',
+    aimErrorPct,
+    pathAccuracyPct: 100 - aimErrorPct,
+  };
+}
+
+/**
  * H형 레이저 트랙의 시작점·끝점·중간 샘플(12개 이상)과 상하좌우 바운딩 박스를
  * 월드 좌표로 변환하여 아레나 외벽, 콜라이더(0.55m 여백), 바닥/천장 높이와 겹치지 않는지 검사한다.
  */
@@ -1143,14 +1165,25 @@ export interface MissionBracketVisualState {
 
 /**
  * G형 복합미션 정답 과녁의 3D 빨간 브래킷([ ]) 가시성 규칙:
- * - 모든 난이도(Lv 1~10)에서 목표 타겟이 생성된 순간부터 파괴되거나 라운드가 끝날 때까지
- *   깜빡임이나 페이드아웃 없이 항상 선명하게 유지되어 오답 타겟과 명확히 구분되도록 한다.
+ * - Lv 1~4: 항상 표시 (변별 입문 단계의 비계)
+ * - Lv 5~10: 생성 후 1.0초만 표시하고 0.3초 동안 사라진다. 그 뒤에는 화면 상단의
+ *   "찾을 과녁" 안내(색·모양)만 보고 아동이 스스로 정답을 변별해야 한다.
  */
+export const MISSION_BRACKET_CUE_SEC = 1.0;
+export const MISSION_BRACKET_FADE_SEC = 0.3;
+
 export function computeMissionBracketVisualState(
-  _difficulty: number,
-  _ageSec: number,
+  difficulty: number,
+  ageSec: number,
 ): MissionBracketVisualState {
-  return { visible: true, opacity: 0.96, scaleMul: 1.0 };
+  if (difficulty <= 4 || ageSec <= MISSION_BRACKET_CUE_SEC) {
+    return { visible: true, opacity: 0.96, scaleMul: 1.0 };
+  }
+  const fade = (ageSec - MISSION_BRACKET_CUE_SEC) / MISSION_BRACKET_FADE_SEC;
+  if (fade >= 1) {
+    return { visible: false, opacity: 0, scaleMul: 1.0 };
+  }
+  return { visible: true, opacity: Number((0.96 * (1 - fade)).toFixed(3)), scaleMul: 1.0 };
 }
 
 export interface ObstacleConfig {

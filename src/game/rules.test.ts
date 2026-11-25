@@ -741,7 +741,7 @@ test('validateLaserTrackWorldBounds rejects outer wall, collider margin < 0.55m,
   assert.equal(tooLow.valid, false);
 });
 
-test('computeMissionBracketVisualState stays permanently visible across Lv1~10 and wrong-target warning only fires on isTarget===true && isMissionTarget===false', async () => {
+test('computeMissionBracketVisualState: always on at Lv1~4, 1s cue then fade at Lv5~10; wrong-target warning only fires on isTarget===true && isMissionTarget===false', async () => {
   const {
     computeMissionBracketVisualState,
     shouldShowWrongTargetWarning,
@@ -749,13 +749,26 @@ test('computeMissionBracketVisualState stays permanently visible across Lv1~10 a
   } = await import('./rules');
   const { buildHologramTargetMesh } = await import('./worldBuilder');
 
-  // Lv 1~10 mission targets keep red frame permanently visible from spawn until destroyed/round end
-  for (const lv of [1, 5, 8, 9, 10]) {
-    for (const age of [0, 0.25, 1.0, 1.18, 1.5, 4.5, 10.0]) {
+  // Lv 1~4: red frame stays on from spawn until destroyed
+  for (const lv of [1, 2, 4]) {
+    for (const age of [0, 0.25, 1.0, 1.5, 4.5, 10.0]) {
       const state = computeMissionBracketVisualState(lv, age);
       assert.equal(state.visible, true);
       assert.equal(state.opacity, 0.96);
       assert.equal(state.scaleMul, 1.0);
+    }
+  }
+  // Lv 5~10: 1.0s cue, fades over 0.3s, then hidden so the child discriminates from the HUD instruction
+  for (const lv of [5, 9, 10]) {
+    assert.equal(computeMissionBracketVisualState(lv, 0).opacity, 0.96);
+    assert.equal(computeMissionBracketVisualState(lv, 1.0).opacity, 0.96);
+    const mid = computeMissionBracketVisualState(lv, 1.15);
+    assert.equal(mid.visible, true);
+    assert.ok(mid.opacity > 0 && mid.opacity < 0.96);
+    for (const age of [1.3, 1.5, 4.5, 10.0]) {
+      const state = computeMissionBracketVisualState(lv, age);
+      assert.equal(state.visible, false);
+      assert.equal(state.opacity, 0);
     }
   }
 

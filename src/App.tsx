@@ -58,6 +58,7 @@ import {
   computeJoystickMoveVector,
   computeKeyboardMoveVector,
   computeMissionBracketVisualState,
+  gradeLaserTrace,
   computeTargetDirectionHint,
   DEFAULT_SETTINGS,
   DIFFICULTY_CONFIG,
@@ -163,6 +164,13 @@ export default function App() {
   const [countdownText, setCountdownText] = useState<string>('3');
   const [hudScore, setHudScore] = useState(0);
   const [hudCombo, setHudCombo] = useState(0);
+  // G형 복합미션: 찾아야 할 정답 과녁(색·모양)을 HUD에 글로 안내 (빨간 브래킷이 사라진 뒤에도 변별 가능)
+  const [gMissionHud, setGMissionHud] = useState<{
+    key: string;
+    text: string;
+    colorHex: string;
+  } | null>(null);
+  const gMissionHudKeyRef = useRef<string>('');
   const [hudTimeLeft, setHudTimeLeft] = useState(120);
   const [hudEnergy, setHudEnergy] = useState(100);
   const [popups, setPopups] = useState<ScorePopupItem[]>([]);
@@ -1297,6 +1305,8 @@ export default function App() {
       const tmpEdgeWorld = new THREE.Vector3();
       const tmpEdgeProj = new THREE.Vector3();
       let lastLaserTickProgress = 0;
+      // Per-track path deviation (closest distance ÷ corridor width) collected while dragging, for grading
+      const laserTraceStats = new Map<string, { sum: number; n: number; startMs: number }>();
 
       const getProjectedLaserSamples = (t: ActiveTargetInstance) => {
         const localSamples = t.visual.laserCurveSamplesLocal ?? [];
@@ -1421,6 +1431,7 @@ export default function App() {
               inputStateRef.current.laserDragNdcY = ndcY;
 
               manager.resetLaserTrackTarget(t);
+              laserTraceStats.set(t.instanceId, { sum: 0, n: 0, startMs: performance.now() });
               const initProg = 0.02;
               manager.setLaserTrackProgress(t, initProg, false);
               lastLaserTickProgress = initProg;
@@ -1489,6 +1500,13 @@ export default function App() {
             maxForwardStep: 0.18,
             completionThreshold: 0.95,
           });
+          if (stepRes.onTrack && Number.isFinite(stepRes.closestDist)) {
+            const stats = laserTraceStats.get(t.instanceId);
+            if (stats) {
+              stats.sum += stepRes.closestDist / Math.max(1e-6, corridorTol);
+              stats.n += 1;
+            }
+          }
           if (stepRes.nextProgress > curProg) {
             curProg = stepRes.nextProgress;
           }
@@ -1516,13 +1534,19 @@ export default function App() {
             const screenZone: 'left' | 'center' | 'right' =
               screenProj.x < -0.33 ? 'left' : screenProj.x > 0.33 ? 'right' : 'center';
             const seenTime = t.firstSeenTimeMs ?? t.spawnTimeMs;
-            const reactionMs = Math.max(45, performance.now() - seenTime);
+            const traceStats = laserTraceStats.get(t.instanceId);
+            laserTraceStats.delete(t.instanceId);
+            // Reaction = time until the child starts the trace (drawing time is not reaction time)
+            const reactionMs = Math.max(45, (traceStats?.startMs ?? performance.now()) - seenTime);
+            const traceGrade = gradeLaserTrace(
+              traceStats && traceStats.n > 0 ? traceStats.sum / traceStats.n : 0.5,
+            );
 
             const { combo } = recorderRef.current.recordShotHit({
               type: 'H',
-              grade: 'PERFECT',
+              grade: traceGrade.grade,
               reactionMs,
-              aimErrorPct: 4,
+              aimErrorPct: traceGrade.aimErrorPct,
               screenZone,
               elapsedSec: ps.elapsedPlaySec,
               isDirectTouch: isTabletRef.current,
@@ -1536,8 +1560,8 @@ export default function App() {
             soundEngine.playLaserTrackComplete();
             spawnHitParticles(headWorldPos, PALETTE.yellow, 28);
             spawnRingWave(headWorldPos, PALETTE.yellow);
-            const hitFeedback = getShotFeedbackMessage('PERFECT');
-            addScreenPopup(headWorldPos, hitFeedback.title, 'PERFECT');
+            const hitFeedback = getShotFeedbackMessage(traceGrade.grade);
+            addScreenPopup(headWorldPos, hitFeedback.title, traceGrade.grade);
             return true;
           }
 
@@ -1615,6 +1639,9 @@ export default function App() {
       let lastTimeMs = performance.now();
 
       const finishGameSession = () => {
+        // Leave PLAYING before releasing pointer lock: the pointerlockchange handler pauses
+        // the game whenever the lock drops during PLAYING, which used to hide the result screen.
+        phaseRef.current = 'RESULT';
         if (document.pointerLockElement) {
           try {
             document.exitPointerLock();
@@ -2591,6 +2618,24 @@ export default function App() {
                   w: col.maxX - col.minX,
                   d: col.maxZ - col.minZ,
                 });
+              }
+            }
+            {
+              const gm = manager.currentGMission;
+              const nextKey = gm && gm.remainingCorrect > 0 ? `${gm.groupId}:${gm.mode}` : '';
+              if (nextKey !== gMissionHudKeyRef.current) {
+                gMissionHudKeyRef.current = nextKey;
+                if (!gm || !nextKey) {
+                  setGMissionHud(null);
+                } else {
+                  const text =
+                    gm.mode === 'color'
+                      ? `${gm.targetColorName} 색 과녁을 찾아 맞혀요`
+                      : gm.mode === 'shape'
+                        ? `${gm.targetShapeName} 모양 과녁을 찾아 맞혀요`
+                        : `${gm.targetColorName} 색 ${gm.targetShapeName} 과녁을 찾아 맞혀요`;
+                  setGMissionHud({ key: nextKey, text, colorHex: gm.targetColorHex });
+                }
               }
             }
             const radarTargets = manager.activeTargets
@@ -4120,6 +4165,20 @@ export default function App() {
                   </div>
                 </div>
               </div>
+
+              {gMissionHud && (
+                <div
+                  data-testid="hud-g-mission"
+                  className="fixed left-1/2 top-24 -translate-x-1/2 z-30 pointer-events-none rounded-xl border-2 px-4 py-2 shadow-md font-black text-sm sm:text-base"
+                  style={{ background: 'rgba(15,23,42,0.82)', borderColor: gMissionHud.colorHex, color: '#ECE8E1' }}
+                >
+                  <span
+                    className="inline-block w-3 h-3 rounded-full mr-2 align-middle"
+                    style={{ background: gMissionHud.colorHex }}
+                  />
+                  미션: {gMissionHud.text}
+                </div>
+              )}
 
               {/* Energy Bar */}
               <div
