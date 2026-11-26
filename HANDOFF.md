@@ -17,7 +17,7 @@
 |---|---|
 | 손 조작 규칙 (조준점 변환, 가장자리 회전, 0.5초 머무르기, 손 인식 테스트) + 테스트 | `src/hand/handControl.ts`, `src/hand/handControl.test.ts` |
 | 손 인식 테스트 패널 (메뉴) | `src/hand/HandTestPanel.tsx` |
-| 총 대신 활: 손가락 쪽으로 겨누고, 과녁에 대고 있는 0.5초 동안 시위가 당겨지며 화살촉이 빛나고, 다 당기면 화살이 날아가 꽂힘 (코드로 만든 모델, 합성 효과음) | `src/game/bowRig.ts`, `src/App.tsx` (`bowRigRef`, `bowFireRef`) |
+| 총 대신 국궁(각궁): 손가락 쪽으로 겨누고, 과녁에 대고 있는 0.5초 동안 시위가 당겨지며 화살촉이 빛나고, 다 당기면 화살이 날아가 꽂힘. 활 몸은 GLB(`public/assets/models/weapons/gakgung.glb`, `node tools/bow/build_gakgung.mjs`로 다시 만들 수 있음), 시위·화살은 코드 | `src/game/bowRig.ts`, `tools/bow/build_gakgung.mjs`, `src/App.tsx` (`bowRigRef`, `bowFireRef`) |
 | 총 숨김·발사 막기, 가운데 십자선 숨김 | `src/game/weaponSystem.ts` `setHiddenByMode`, `src/App.tsx` |
 | 웹캠 손 추적 (MediaPipe, 카메라 영상은 안 보임) | `src/hand/handTracker.ts` |
 | 떨림 보정·팔 뻗기 범위 보정 수학 | `src/hand/handRules.ts` |

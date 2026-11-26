@@ -2,14 +2,17 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * 손 조작용 1인칭 활 (총 대신).
+ * 손 조작용 1인칭 국궁(각궁) (총 대신).
+ * - 활 몸은 public/assets/models/weapons/gakgung.glb (tools/bow/build_gakgung.mjs로 만든 원래 디자인)
+ * - 시위는 GLB 안의 위치 표시를 따라 코드로 그린다: 양냥고자 → 도고지 → 당김점 → 도고지 → 양냥고자
  * - 활은 손가락 조준점 쪽으로 몸을 돌리고, 위치도 조금 따라간다
  * - 과녁에 손가락을 대고 있는 0.5초 동안 시위가 당겨지고 화살촉이 빛난다 (setDraw)
  * - 다 당겨지면 화살이 날아가 맞은 곳에 잠깐 꽂혔다가 사라진다 (release)
- * 모델은 코드로 만든 원래 디자인이며, 총과 같은 1인칭 레이어(VIEWMODEL_LAYER)에 그린다.
+ * 총과 같은 1인칭 레이어(VIEWMODEL_LAYER)에 그린다.
  */
 
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { VIEWMODEL_LAYER } from './weaponSystem';
 
 /** 조준점 쪽으로 활 몸통이 돌아가는 정도 (1 = 정확히 조준점을 향함) */
@@ -17,10 +20,17 @@ const AIM_FOLLOW = 0.85;
 /** 조준점 쪽으로 활 위치가 따라가는 거리 (카메라 공간 m) */
 const SHIFT_X = 0.1;
 const SHIFT_Y = 0.06;
-/** 화면을 가리지 않도록 활 전체 크기를 줄인다 */
-const BOW_SCALE = 0.6;
-const DRAW_PULL = 0.2;
+/** 실제 크기(약 1.2m) 활을 화면에 맞게 줄이는 배율 */
+const BOW_SCALE = 0.38;
+/** 다 당겼을 때 시위가 뒤로 오는 거리 (활 모델 단위 m) */
+const DRAW_PULL = 0.34;
+/** 걸어 둔 화살 길이 배율 (기본 화살 0.62m → 약 0.8m) */
+const NOCKED_ARROW_SCALE = 1.3;
 const ARROW_SPEED = 55;
+
+const GAKGUNG_URL =
+  ((import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/') +
+  'assets/models/weapons/gakgung.glb';
 
 interface FlyingArrow {
   mesh: THREE.Group;
@@ -43,30 +53,57 @@ export function aimPointInCameraSpace(
   return new THREE.Vector3(ndcX * halfW, ndcY * halfH, -depth);
 }
 
+/** 화살 (길이 0.62m, -Z가 촉). 깃은 붉은색과 흰색 */
 function buildArrow(): THREE.Group {
   const g = new THREE.Group();
   const shaft = new THREE.Mesh(
     new THREE.CylinderGeometry(0.006, 0.006, 0.62, 8),
-    new THREE.MeshStandardMaterial({ color: '#C8A26B', roughness: 0.7 }),
+    new THREE.MeshStandardMaterial({ color: '#D2B07A', roughness: 0.7 }),
   );
   shaft.rotation.x = Math.PI / 2;
   g.add(shaft);
   const head = new THREE.Mesh(
-    new THREE.ConeGeometry(0.018, 0.07, 10),
+    new THREE.ConeGeometry(0.016, 0.06, 10),
     new THREE.MeshStandardMaterial({ color: '#E9F6FF', emissive: '#38BDF8', emissiveIntensity: 0.4, metalness: 0.6, roughness: 0.25 }),
   );
   head.name = 'arrow-head';
   head.rotation.x = -Math.PI / 2;
-  head.position.z = -0.345;
+  head.position.z = -0.34;
   g.add(head);
-  const fletchMat = new THREE.MeshStandardMaterial({ color: '#F472B6', side: THREE.DoubleSide, roughness: 0.8 });
+  const fletchMats = [
+    new THREE.MeshStandardMaterial({ color: '#C0262D', side: THREE.DoubleSide, roughness: 0.8 }),
+    new THREE.MeshStandardMaterial({ color: '#F8F4EA', side: THREE.DoubleSide, roughness: 0.8 }),
+  ];
   for (let i = 0; i < 3; i++) {
-    const f = new THREE.Mesh(new THREE.PlaneGeometry(0.03, 0.09), fletchMat);
-    f.position.z = 0.27;
+    const f = new THREE.Mesh(new THREE.PlaneGeometry(0.026, 0.1), fletchMats[i === 0 ? 0 : 1]);
+    f.position.z = 0.25;
     f.rotation.set(Math.PI / 2, 0, (i * Math.PI * 2) / 3);
-    f.translateX(0.016);
+    f.translateX(0.014);
     g.add(f);
   }
+  return g;
+}
+
+/** GLB를 못 읽을 때 쓰는 간단한 활 (활 모델 단위) */
+function buildFallbackBow(): THREE.Group {
+  const g = new THREE.Group();
+  const wood = new THREE.MeshStandardMaterial({ color: '#3A2618', roughness: 0.55 });
+  for (const sign of [1, -1]) {
+    const curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, 0.07 * sign, -0.012),
+      new THREE.Vector3(0, 0.26 * sign, 0.035),
+      new THREE.Vector3(0, 0.42 * sign, 0.1),
+      new THREE.Vector3(0, 0.525 * sign, 0.09),
+      new THREE.Vector3(0, 0.585 * sign, -0.005),
+    ]);
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 30, 0.016, 8, false), wood));
+  }
+  const grip = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.02, 0.02, 0.14, 12),
+    new THREE.MeshStandardMaterial({ color: '#8E1B1B', roughness: 0.8 }),
+  );
+  grip.position.z = -0.012;
+  g.add(grip);
   return g;
 }
 
@@ -75,15 +112,24 @@ export class BowRig {
   private scene: THREE.Scene;
   private root = new THREE.Group();
   private pivot = new THREE.Group();
+  private model = new THREE.Group();
   private string: THREE.Line;
   private stringPos: THREE.BufferAttribute;
   private nocked: THREE.Group;
   private headMat: THREE.MeshStandardMaterial;
   private glow: THREE.PointLight;
-  private limbTopTip = new THREE.Vector3(0, 0.33, 0.06);
-  private limbBottomTip = new THREE.Vector3(0, -0.33, 0.06);
+  private disposed = false;
+
+  // 시위가 지나는 자리 (활 모델 단위). GLB의 빈 노드 위치로 바뀐다
+  private stringTop = new THREE.Vector3(0, 0.585, -0.001);
+  private bridgeTop = new THREE.Vector3(0, 0.43, 0.128);
+  private bridgeBottom = new THREE.Vector3(0, -0.456, 0.128);
+  private stringBottom = new THREE.Vector3(0, -0.62, -0.001);
+  private nockRest = new THREE.Vector3(0, 0.09, 0.128);
+  private arrowRest = new THREE.Vector3(0.012, 0.09, -0.012);
+
   // 왼손에 든 활처럼 화면 왼쪽 아래: 화살이 대각선으로 조준점을 향해 보인다
-  private basePos = new THREE.Vector3(-0.16, -0.17, -0.55);
+  private basePos = new THREE.Vector3(-0.16, -0.15, -0.55);
 
   private aimNdc = new THREE.Vector2(0, 0);
   private curQuat = new THREE.Quaternion();
@@ -102,57 +148,75 @@ export class BowRig {
     this.root.position.copy(this.basePos);
     this.root.scale.setScalar(BOW_SCALE);
     this.root.add(this.pivot);
+    this.pivot.add(this.model);
     camera.add(this.root);
 
-    // 활대: 손잡이에서 위아래로 휘어진 두 팔 (튜브)
-    const wood = new THREE.MeshStandardMaterial({ color: '#7C4A2D', roughness: 0.55, metalness: 0.05 });
-    const gold = new THREE.MeshStandardMaterial({ color: '#F5B749', roughness: 0.3, metalness: 0.7 });
-    const limbCurve = (sign: number) =>
-      new THREE.CatmullRomCurve3([
-        new THREE.Vector3(0, 0.05 * sign, -0.02),
-        new THREE.Vector3(0, 0.16 * sign, -0.06),
-        new THREE.Vector3(0, 0.27 * sign, -0.02),
-        new THREE.Vector3(0, 0.33 * sign, 0.06),
-      ]);
-    for (const sign of [1, -1]) {
-      const limb = new THREE.Mesh(new THREE.TubeGeometry(limbCurve(sign), 24, 0.014, 8, false), wood);
-      this.pivot.add(limb);
-      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.02, 10, 8), gold);
-      tip.position.set(0, 0.33 * sign, 0.06);
-      this.pivot.add(tip);
-    }
-    const grip = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.02, 0.02, 0.12, 12),
-      new THREE.MeshStandardMaterial({ color: '#2DD4BF', roughness: 0.6 }),
-    );
-    grip.position.z = -0.02;
-    this.pivot.add(grip);
-    const gem = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.022),
-      new THREE.MeshStandardMaterial({ color: '#A78BFA', emissive: '#7C3AED', emissiveIntensity: 0.6, roughness: 0.2 }),
-    );
-    gem.position.set(0, 0, -0.045);
-    this.pivot.add(gem);
+    // GLB를 읽는 동안(또는 실패하면) 보이는 간단한 활
+    const fallback = buildFallbackBow();
+    fallback.name = 'bow-fallback';
+    this.model.add(fallback);
 
-    // 시위 (위 끝 → 당김점 → 아래 끝)
+    // 시위: 양냥고자 → 도고지 → 당김점 → 도고지 → 양냥고자
     const sg = new THREE.BufferGeometry();
-    this.stringPos = new THREE.BufferAttribute(new Float32Array(9), 3);
+    this.stringPos = new THREE.BufferAttribute(new Float32Array(15), 3);
     sg.setAttribute('position', this.stringPos);
-    this.string = new THREE.Line(sg, new THREE.LineBasicMaterial({ color: '#FFF7E6' }));
+    this.string = new THREE.Line(sg, new THREE.LineBasicMaterial({ color: '#FFF3DA' }));
+    this.string.frustumCulled = false;
     this.pivot.add(this.string);
 
-    // 걸어 둔 화살
+    // 걸어 둔 화살 (줌통의 화살 자리 옆, 촉이 과녁 쪽 -Z)
     this.nocked = buildArrow();
-    this.nocked.position.set(0, 0, -0.18);
+    this.nocked.scale.setScalar(NOCKED_ARROW_SCALE);
     this.pivot.add(this.nocked);
     this.headMat = (this.nocked.getObjectByName('arrow-head') as THREE.Mesh).material as THREE.MeshStandardMaterial;
-    this.glow = new THREE.PointLight('#38BDF8', 0, 0.8);
-    this.glow.position.set(0, 0, -0.5);
+    this.glow = new THREE.PointLight('#38BDF8', 0, 1.2);
     this.pivot.add(this.glow);
 
-    this.root.traverse((o) => o.layers.set(VIEWMODEL_LAYER));
+    this.applyLayers(this.root);
     this.glow.layers.enable(VIEWMODEL_LAYER);
     this.updateString();
+    this.loadModel();
+  }
+
+  private applyLayers(obj: THREE.Object3D) {
+    obj.traverse((o) => o.layers.set(VIEWMODEL_LAYER));
+  }
+
+  private loadModel() {
+    new GLTFLoader().load(
+      GAKGUNG_URL,
+      (gltf) => {
+        if (this.disposed) return;
+        const glb = gltf.scene;
+        const pick = (name: string, into: THREE.Vector3) => {
+          const n = glb.getObjectByName(name);
+          if (n) into.copy(n.position);
+        };
+        pick('string_top', this.stringTop);
+        pick('string_bottom', this.stringBottom);
+        pick('bridge_top', this.bridgeTop);
+        pick('bridge_bottom', this.bridgeBottom);
+        pick('nock_point', this.nockRest);
+        pick('arrow_rest', this.arrowRest);
+        glb.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (m.isMesh) {
+            m.castShadow = false;
+            m.receiveShadow = false;
+            m.frustumCulled = false;
+          }
+        });
+        this.applyLayers(glb);
+        const fb = this.model.getObjectByName('bow-fallback');
+        if (fb) this.model.remove(fb);
+        this.model.add(glb);
+        this.updateString();
+      },
+      undefined,
+      () => {
+        // 못 읽으면 간단한 활을 그대로 쓴다
+      },
+    );
   }
 
   setVisible(v: boolean) {
@@ -245,15 +309,22 @@ export class BowRig {
   }
 
   private updateString() {
-    const nockZ = 0.06 + this.draw * DRAW_PULL;
+    // 당김점: 쉴 때는 도고지 사이 직선 위, 당기면 쏘는 사람 쪽(+Z)으로
+    const nockZ = this.nockRest.z + this.draw * DRAW_PULL;
     const p = this.stringPos.array as Float32Array;
     p.set([
-      this.limbTopTip.x, this.limbTopTip.y, this.limbTopTip.z,
-      0, 0, nockZ,
-      this.limbBottomTip.x, this.limbBottomTip.y, this.limbBottomTip.z,
+      this.stringTop.x, this.stringTop.y, this.stringTop.z,
+      this.bridgeTop.x, this.bridgeTop.y, this.bridgeTop.z,
+      this.nockRest.x, this.nockRest.y, nockZ,
+      this.bridgeBottom.x, this.bridgeBottom.y, this.bridgeBottom.z,
+      this.stringBottom.x, this.stringBottom.y, this.stringBottom.z,
     ]);
     this.stringPos.needsUpdate = true;
-    this.nocked.position.z = -0.25 + this.draw * DRAW_PULL;
+    // 화살: 오늬(꼬리)가 당김점에, 몸통은 화살 자리 옆
+    const tailOffset = 0.31 * NOCKED_ARROW_SCALE;
+    this.nocked.position.set(this.arrowRest.x, this.nockRest.y, nockZ - tailOffset);
+    const headZ = nockZ - tailOffset - 0.34 * NOCKED_ARROW_SCALE;
+    this.glow.position.set(this.arrowRest.x, this.nockRest.y, headZ);
   }
 
   update(dt: number) {
@@ -262,8 +333,9 @@ export class BowRig {
     const target = aimPointInCameraSpace(this.aimNdc.x * AIM_FOLLOW, this.aimNdc.y * AIM_FOLLOW, this.camera, 10);
     const local = target.clone().sub(this.root.position).normalize();
     const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), local);
-    // 살짝 기울여 든 활
+    // 살짝 기울여 들고, 옆으로 조금 틀어 각궁의 휜 모양(반곡)이 보이게 한다
     q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -0.38));
+    q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.42));
     this.curQuat.slerp(q, k);
     this.pivot.quaternion.copy(this.curQuat);
     this.curShift.lerp(new THREE.Vector2(this.aimNdc.x * SHIFT_X, this.aimNdc.y * SHIFT_Y), k);
@@ -312,6 +384,7 @@ export class BowRig {
   }
 
   dispose() {
+    this.disposed = true;
     this.camera.remove(this.root);
     for (const a of this.flying) {
       this.scene.remove(a.mesh);
