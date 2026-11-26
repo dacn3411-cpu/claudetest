@@ -168,3 +168,125 @@ export function stepHandTest(state: HandTestState, tip: Vec2 | null, dtSec: numb
 export function calibrationFromTest(state: HandTestState): ReachCalibration {
   return computeReachCalibration(state.samples, 0.5);
 }
+
+// ───────────────────────────── 활 쏘기 손동작 ─────────────────────────────
+
+/** 엄지·검지 끝 거리 ÷ 손 크기가 이보다 작으면 "붙임" */
+export const PINCH_CLOSE_RATIO = 0.35;
+/** 당기는 중에는 이보다 벌어져야 "뗌" (흔들림으로 잘못 쏘지 않게 여유를 둔다) */
+export const PINCH_OPEN_RATIO = 0.5;
+/** 주먹으로 볼 접힌 손가락 수 (중지·약지·새끼 중) */
+export const FIST_MIN_CURLED = 2;
+/** 시위를 끝까지 당기는 데 걸리는 시간 */
+export const DRAW_FULL_SEC = 1.2;
+/** 이보다 적게 당기고 떼면 쏘지 않고 시위만 풀린다 */
+export const MIN_RELEASE_DRAW = 0.15;
+
+export interface BowGestureInput {
+  /** 엄지·검지 거리 ÷ 손 크기. null = 손이 안 보임 */
+  pinchRatio: number | null;
+  /** 접힌 손가락 수 */
+  curled: number;
+}
+
+export interface BowGestureResult {
+  /** 지금 당긴 정도 0~1 */
+  draw: number;
+  drawing: boolean;
+  /** 이번 프레임에 화살을 쐈는지, 그때 당긴 정도 */
+  fired: boolean;
+  fireDraw: number;
+}
+
+/**
+ * 활 쏘기 손동작:
+ * - 엄지·검지를 붙이고 나머지 손가락을 주먹 쥐면 당기기 시작
+ * - 붙이고 있는 동안 시위가 점점 당겨져 1.2초에 최대
+ * - 엄지·검지를 떼면 그때 당긴 만큼으로 발사 (너무 조금 당겼으면 취소)
+ * - 손이 0.3초 넘게 안 보이면 취소
+ */
+export class BowGesture {
+  private drawing = false;
+  private heldSec = 0;
+  private lostSec = 0;
+
+  update(input: BowGestureInput, dtSec: number): BowGestureResult {
+    const idle = (fired = false, fireDraw = 0): BowGestureResult => ({
+      draw: 0,
+      drawing: false,
+      fired,
+      fireDraw,
+    });
+    if (input.pinchRatio === null) {
+      if (!this.drawing) return idle();
+      this.lostSec += dtSec;
+      if (this.lostSec > HAND_LOST_GRACE_SEC) {
+        this.reset();
+        return idle();
+      }
+      return { draw: this.draw, drawing: true, fired: false, fireDraw: 0 };
+    }
+    this.lostSec = 0;
+    if (!this.drawing) {
+      if (input.pinchRatio < PINCH_CLOSE_RATIO && input.curled >= FIST_MIN_CURLED) {
+        this.drawing = true;
+        this.heldSec = 0;
+      }
+      return { draw: this.draw, drawing: this.drawing, fired: false, fireDraw: 0 };
+    }
+    if (input.pinchRatio > PINCH_OPEN_RATIO) {
+      const d = this.draw;
+      this.reset();
+      return d >= MIN_RELEASE_DRAW ? idle(true, d) : idle();
+    }
+    this.heldSec += dtSec;
+    return { draw: this.draw, drawing: true, fired: false, fireDraw: 0 };
+  }
+
+  get draw(): number {
+    return Math.min(1, this.heldSec / DRAW_FULL_SEC);
+  }
+
+  reset() {
+    this.drawing = false;
+    this.heldSec = 0;
+    this.lostSec = 0;
+  }
+}
+
+// ───────────────────────────── 화살 탄도 (5단계) ─────────────────────────────
+
+/** 이 단계부터 당긴 정도에 따라 화살 속도가 바뀌고 중력으로 떨어진다 */
+export const BALLISTIC_LEVEL = 5;
+/** 1~4단계 화살 속도 (곧게, 낙차 없이) */
+export const STRAIGHT_ARROW_SPEED = 55;
+/** 5단계: 조금 당기면 느리고(많이 떨어짐), 끝까지 당기면 빠르다 */
+export const BALLISTIC_MIN_SPEED = 16;
+export const BALLISTIC_MAX_SPEED = 60;
+export const ARROW_GRAVITY = 8;
+
+export function isBallisticLevel(level: number): boolean {
+  return level >= BALLISTIC_LEVEL;
+}
+
+/** 쏠 때 화살 속도 (m/s). 1~4단계는 당긴 정도와 상관없이 같다 */
+export function arrowLaunchSpeed(level: number, draw: number): number {
+  if (!isBallisticLevel(level)) return STRAIGHT_ARROW_SPEED;
+  const d = Math.max(0, Math.min(1, draw));
+  return BALLISTIC_MIN_SPEED + (BALLISTIC_MAX_SPEED - BALLISTIC_MIN_SPEED) * d;
+}
+
+/** 탄도 위치: 시작점 + 방향×속도×t, 아래로 ½gt² */
+export function ballisticPosition(
+  origin: { x: number; y: number; z: number },
+  dir: { x: number; y: number; z: number },
+  speed: number,
+  gravity: number,
+  t: number,
+): { x: number; y: number; z: number } {
+  return {
+    x: origin.x + dir.x * speed * t,
+    y: origin.y + dir.y * speed * t - 0.5 * gravity * t * t,
+    z: origin.z + dir.z * speed * t,
+  };
+}

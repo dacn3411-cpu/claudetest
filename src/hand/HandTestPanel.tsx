@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import {
+  BowGesture,
   HAND_DWELL_SEC,
   HAND_TEST_POINTS,
   HAND_TEST_RADIUS,
@@ -44,11 +45,16 @@ export default function HandTestPanel({ frameRef, status, passed, onStartCamera,
   onPassedRef.current = onPassed;
   const [step, setStep] = useState(0);
   const [handSeen, setHandSeen] = useState(false);
+  // 점 5개를 다 짚은 뒤: 활 쏘기 연습 (엄지·검지 붙이고 주먹 → 당기기 → 떼기)
+  const gestureRef = useRef(new BowGesture());
+  const drawRef = useRef(0);
 
   // 다시 테스트할 때 처음부터
   useEffect(() => {
     if (!passed) {
       testRef.current = newHandTestState();
+      gestureRef.current.reset();
+      drawRef.current = 0;
       setStep(0);
     }
   }, [passed]);
@@ -70,10 +76,23 @@ export default function HandTestPanel({ frameRef, status, passed, onStartCamera,
         setHandSeen(lastSeen);
       }
       if (!passedRef.current) {
-        const r = stepHandTest(testRef.current, hand ? hand.tip : null, dt);
+        // 조준점은 게임과 같은 손바닥 중심
+        const r = stepHandTest(testRef.current, hand ? hand.aim : null, dt);
         testRef.current = r.state;
         if (r.advanced) setStep(r.state.index);
-        if (r.passed) onPassedRef.current(calibrationFromTest(r.state));
+        if (r.state.index >= HAND_TEST_POINTS.length) {
+          const g = gestureRef.current.update(
+            hand
+              ? { pinchRatio: hand.pinchDist / Math.max(1e-6, hand.size), curled: hand.curled }
+              : { pinchRatio: null, curled: 0 },
+            dt,
+          );
+          drawRef.current = g.draw;
+          if (g.fired && g.fireDraw >= 0.3) {
+            drawRef.current = 0;
+            onPassedRef.current(calibrationFromTest(r.state));
+          }
+        }
       }
       draw(hand);
     };
@@ -138,9 +157,23 @@ export default function HandTestPanel({ frameRef, status, passed, onStartCamera,
         ctx.strokeStyle = '#FFFFFF';
         ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.arc(sx(hand.tip.x), sy(hand.tip.y), 9, 0, Math.PI * 2);
+        ctx.arc(sx(hand.aim.x), sy(hand.aim.y), 9, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+      }
+      // 활 쏘기 연습: 당긴 정도 막대
+      if (!passedRef.current && st.index >= HAND_TEST_POINTS.length) {
+        const bw = Math.min(320, w * 0.6);
+        const bx = (w - bw) / 2;
+        const by = h - 30;
+        ctx.fillStyle = 'rgba(15,23,42,0.15)';
+        ctx.fillRect(bx, by, bw, 14);
+        ctx.fillStyle = drawRef.current >= 0.3 ? '#22C55E' : '#F59E0B';
+        ctx.fillRect(bx, by, bw * drawRef.current, 14);
+        ctx.fillStyle = '#2B2A5E';
+        ctx.font = "700 13px Jua, 'Noto Sans KR', sans-serif";
+        ctx.textAlign = 'center';
+        ctx.fillText('시위 당김', w / 2, by - 10);
       }
     };
     raf = requestAnimationFrame(loop);
@@ -162,7 +195,13 @@ export default function HandTestPanel({ frameRef, status, passed, onStartCamera,
             passed ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-600'
           }`}
         >
-          {passed ? '통과' : status.kind === 'running' ? `${Math.min(step, total)} / ${total}` : '대기'}
+          {passed
+            ? '통과'
+            : status.kind === 'running'
+              ? step >= total
+                ? '활 쏘기 연습'
+                : `${Math.min(step, total)} / ${total}`
+              : '대기'}
         </span>
       </div>
 
@@ -176,7 +215,7 @@ export default function HandTestPanel({ frameRef, status, passed, onStartCamera,
             {status.kind === 'idle' && (
               <>
                 <p className="text-sm font-bold text-slate-700">
-                  화면에서 60cm쯤 떨어져 가운데에 앉아요. 손으로 조준하고, 과녁에 손가락을 0.5초 대면 터져요.
+                  화면에서 60cm쯤 떨어져 가운데에 앉아요. 손바닥으로 조준하고, 엄지·검지를 붙이고 주먹을 쥐면 시위를 당겨요. 떼면 화살이 날아가요.
                 </p>
                 <button
                   type="button"
@@ -212,7 +251,9 @@ export default function HandTestPanel({ frameRef, status, passed, onStartCamera,
               ? '통과! 팔 뻗기 범위를 맞췄어요. 아래 게임 시작을 눌러요'
               : !handSeen
                 ? '손이 안 보여요. 손바닥을 카메라 쪽으로 들어 주세요'
-                : `초록 점(${current.label})에 검지를 0.5초 대요`}
+                : step >= total
+                  ? '활 쏘기 연습: 엄지·검지를 붙이고 나머지 손가락은 주먹 → 막대가 차면 엄지·검지를 떼요'
+                  : `초록 점(${current.label})에 손바닥 가운데를 0.5초 대요`}
           </span>
           {passed && (
             <button type="button" onClick={onRetest} className="px-3 py-1 rounded-lg bg-white border-2 border-[#C9BEF5]">

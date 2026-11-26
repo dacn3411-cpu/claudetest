@@ -18,6 +18,10 @@ export interface TrackedHand {
   side: HandSide;
   /** 검지 끝 (거울 화면 이미지 좌표 0~1) */
   tip: Vec2;
+  /** 손바닥 중심 (손목·검지/중지/약지/새끼 뿌리 평균) — 활 조준점. 손가락을 떼도 덜 흔들린다 */
+  aim: Vec2;
+  /** 중지·약지·새끼 중 접힌(주먹 쥔) 손가락 수 0~3 */
+  curled: number;
   /** 손목–중지 뿌리 거리 (이미지 좌표). 카메라에 가까울수록 커짐 → 뻗기 감지 */
   size: number;
   /** 엄지 끝–검지 끝 거리 → 집기 감지 */
@@ -161,9 +165,22 @@ export class HandTracker {
       let side: HandSide = cat?.categoryName === 'Left' ? 'L' : 'R';
       if (this.swapHandedness) side = side === 'L' ? 'R' : 'L';
       const dist = (a: number, b: number) => Math.hypot(lm[a].x - lm[b].x, lm[a].y - lm[b].y);
+      const palmIdx = [0, 5, 9, 13, 17];
+      const aim = {
+        x: palmIdx.reduce((acc, k) => acc + lm[k].x, 0) / palmIdx.length,
+        y: palmIdx.reduce((acc, k) => acc + lm[k].y, 0) / palmIdx.length,
+      };
+      // 손가락 끝이 둘째 마디보다 손목에 가까우면 접힌 것
+      const curled = [
+        [12, 10],
+        [16, 14],
+        [20, 18],
+      ].filter(([tipI, pipI]) => dist(tipI, 0) < dist(pipI, 0)).length;
       out.push({
         side,
         tip: lm[8],
+        aim,
+        curled,
         size: dist(0, 9),
         pinchDist: dist(4, 8),
         landmarks: lm,

@@ -91,7 +91,17 @@ import { soundEngine } from './game/audio';
 import HandTestPanel, { primaryHand } from './hand/HandTestPanel';
 import { BowRig } from './game/bowRig';
 import { HandTracker, type HandFrame, type TrackerStatus } from './hand/handTracker';
-import { DwellFire, HAND_LEVEL_COUNT, edgeYawRate, edgeZone, handTipToNdc } from './hand/handControl';
+import {
+  ARROW_GRAVITY,
+  BowGesture,
+  DwellFire,
+  HAND_LEVEL_COUNT,
+  arrowLaunchSpeed,
+  edgeYawRate,
+  edgeZone,
+  handTipToNdc,
+  isBallisticLevel,
+} from './hand/handControl';
 import { DEFAULT_CALIBRATION, OneEuroFilter2D, type ReachCalibration } from './hand/handRules';
 import { buildArenaWorld, BuiltArenaWorld } from './game/worldBuilder';
 import {
@@ -469,6 +479,10 @@ export default function App() {
   // 손 조작용 활: 총 대신 화면에 들고, 손가락 쪽으로 겨누고 0.5초 동안 시위를 당겨 쏜다
   const bowRigRef = useRef<BowRig | null>(null);
   const bowFireRef = useRef<(ndcX: number, ndcY: number) => void>(() => {});
+  // 5단계: 당긴 정도에 따른 속도로 탄도 화살을 쏘고, 맞은 곳에서 판정한다
+  const bowFireBallisticRef = useRef<(ndcX: number, ndcY: number, speed: number) => void>(() => {});
+  // 조준점 아래 맨 앞 과녁의 종류 (레이저 트랙 'H'만 0.5초 대기로 따라 그리기를 시작한다)
+  const probeTargetTypeRef = useRef<(ndcX: number, ndcY: number) => string | null>(() => null);
   const probeDirectTouchTargetRef = useRef<(ndcX: number, ndcY: number) => boolean>(
     () => false,
   );
@@ -524,7 +538,10 @@ export default function App() {
 
   useEffect(() => {
     const filter = new OneEuroFilter2D(1.0, 0.03);
+    // 레이저 트랙 시작점에만 쓰는 0.5초 대기
     const dwell = new DwellFire();
+    // 활 쏘기: 엄지·검지 붙이고 주먹 → 당기기, 떼면 발사
+    const gesture = new BowGesture();
     let raf = 0;
     let last = performance.now();
     let lostSec = 0;
@@ -542,6 +559,7 @@ export default function App() {
         hideCursor();
         filter.reset();
         dwell.reset();
+        gesture.reset();
         lostSec = 0;
         bowRigRef.current?.setAim(null);
         bowRigRef.current?.setDraw(0);
@@ -551,14 +569,16 @@ export default function App() {
       if (!hand) {
         hideCursor();
         dwell.update(null, dt);
+        const g = gesture.update({ pinchRatio: null, curled: 0 }, dt);
         bowRigRef.current?.setAim(null);
-        bowRigRef.current?.setDraw(0);
+        bowRigRef.current?.setDraw(g.draw);
         lostSec += dt;
         if (lostSec > 0.8 && inputStateRef.current.laserDragTargetId) releaseLaserTrackDragRef.current();
         return;
       }
       lostSec = 0;
-      const ndc = filter.filter(handTipToNdc(hand.tip, handCalRef.current), now / 1000);
+      // 조준점 = 손바닥 중심 (엄지·검지를 떼는 순간에도 덜 흔들린다)
+      const ndc = filter.filter(handTipToNdc(hand.aim, handCalRef.current), now / 1000);
       bowRigRef.current?.setAim(ndc);
 
       // 가장자리 회전: 제자리에서 좌우 ±90° 안
@@ -568,20 +588,36 @@ export default function App() {
         ps.yaw = clampPlayerYawForMode(ps.yaw + rate * dt, 1, ps.x, ps.z);
       }
 
-      // 레이저 트랙: 시작점에서 0.5초 → 따라 그리기 시작, 손가락으로 이어서 그린다
+      let ringProgress = 0;
       if (inputStateRef.current.laserDragTargetId) {
+        // 레이저 트랙: 손을 따라 이어서 그린다
         handleLaserTrackDragStepRef.current(ndc.x, ndc.y, false);
         dwell.reset();
+        gesture.reset();
+        bowRigRef.current?.setDraw(0);
       } else {
-        const onTarget = probeDirectTouchTargetRef.current(ndc.x, ndc.y);
-        if (dwell.update(onTarget, dt)) {
-          // 다 당긴 시위를 놓는다: 화살이 날아가고 같은 순간 명중 판정
-          bowFireRef.current(ndc.x, ndc.y);
-          shootFnRef.current({ ndcX: ndc.x, ndcY: ndc.y, isDirectTouch: true, fromBow: true });
+        const g = gesture.update({ pinchRatio: hand.pinchDist / Math.max(1e-6, hand.size), curled: hand.curled }, dt);
+        bowRigRef.current?.setDraw(g.draw);
+        ringProgress = g.draw;
+        if (g.fired) {
+          const level = settingsRef.current.difficulty;
+          if (isBallisticLevel(level)) {
+            // 5단계: 당긴 만큼 빠르고, 덜 당기면 느려서 많이 떨어진다. 판정은 화살이 맞은 곳에서
+            bowFireBallisticRef.current(ndc.x, ndc.y, arrowLaunchSpeed(level, g.fireDraw));
+          } else {
+            // 1~4단계: 당긴 정도와 상관없이 곧게 날아가고, 쏘는 순간 판정
+            bowFireRef.current(ndc.x, ndc.y);
+            shootFnRef.current({ ndcX: ndc.x, ndcY: ndc.y, isDirectTouch: true, fromBow: true });
+          }
+        } else if (!g.drawing) {
+          // 레이저 트랙 시작점: 손을 0.5초 대면 따라 그리기 시작
+          const onLaser = probeTargetTypeRef.current(ndc.x, ndc.y) === 'H';
+          if (dwell.update(onLaser, dt)) {
+            shootFnRef.current({ ndcX: ndc.x, ndcY: ndc.y, isDirectTouch: true, fromBow: true });
+          }
+          ringProgress = dwell.progress;
         }
       }
-      // 과녁에 손가락을 대고 있는 동안 시위가 당겨진다
-      bowRigRef.current?.setDraw(inputStateRef.current.laserDragTargetId ? 0 : dwell.progress);
 
       // 화면 커서와 가장자리 표시
       const el = handCursorRef.current;
@@ -591,7 +627,7 @@ export default function App() {
       }
       if (handRingRef.current) {
         const c = 2 * Math.PI * 26;
-        handRingRef.current.style.strokeDashoffset = String(c * (1 - dwell.progress));
+        handRingRef.current.style.strokeDashoffset = String(c * (1 - ringProgress));
       }
       const zone = edgeZone(ndc.x);
       if (handEdgeLeftRef.current) handEdgeLeftRef.current.style.opacity = zone === 'left' ? '1' : '0';
@@ -1496,6 +1532,60 @@ export default function App() {
         bowRigRef.current?.release(ndcX, ndcY, hits.length > 0 ? hits[0].distance : 30);
       };
 
+      probeTargetTypeRef.current = (ndcX: number, ndcY: number) => {
+        shootNdc.set(ndcX, ndcY);
+        raycaster.setFromCamera(shootNdc, camera);
+        const live = manager.activeTargets.filter((t) => !t.hit && !t.dying);
+        for (const t of live) t.visual.root.updateMatrixWorld(true);
+        const hits = raycaster.intersectObjects(live.map((t) => t.visual.colliderMesh), true);
+        if (hits.length === 0) return null;
+        const tid = hits[0].object.userData?.targetId as string | undefined;
+        return live.find((t) => t.instanceId === tid)?.typeId ?? null;
+      };
+
+      bowFireBallisticRef.current = (ndcX: number, ndcY: number, speed: number) => {
+        const rig = bowRigRef.current;
+        if (!rig) return;
+        const zone: 'left' | 'center' | 'right' = ndcX < -0.33 ? 'left' : ndcX > 0.33 ? 'right' : 'center';
+        const segRay = new THREE.Raycaster();
+        rig.releaseBallistic(
+          ndcX,
+          ndcY,
+          speed,
+          ARROW_GRAVITY,
+          (from, to) => {
+            const dir = to.clone().sub(from);
+            const len = dir.length();
+            if (len < 1e-6) return null;
+            segRay.set(from, dir.normalize());
+            segRay.far = len;
+            const live = manager.activeTargets.filter((t) => !t.hit && !t.dying);
+            for (const t of live) t.visual.root.updateMatrixWorld(true);
+            const env = manager.isIndoorChallengeActive
+              ? builtWorld.indoorEnvironmentObstacles
+              : [...builtWorld.environmentObstacles, ...manager.staticLevelObstacles];
+            const hits = segRay.intersectObjects([...live.map((t) => t.visual.colliderMesh), ...env], true);
+            return hits.length > 0 ? { point: hits[0].point.clone(), object: hits[0].object } : null;
+          },
+          (hit) => {
+            if (phaseRef.current !== 'PLAYING') return;
+            if (hit && hit.object.userData?.isTarget === true) {
+              // 맞은 자리(과녁 중심 쪽으로 조금)를 화면 좌표로 바꿔 평소 판정을 그대로 쓴다
+              const center = new THREE.Vector3().setFromMatrixPosition(hit.object.matrixWorld);
+              const p = hit.point.clone().lerp(center, 0.3).project(camera);
+              if (p.z < 1 && Math.abs(p.x) <= 1.2 && Math.abs(p.y) <= 1.2) {
+                shootFnRef.current({ ndcX: p.x, ndcY: p.y, fromBow: true });
+                return;
+              }
+            }
+            recorderRef.current.recordShotMiss(playerStateRef.current.elapsedPlaySec, zone, Boolean(hit));
+            soundEngine.playNonTarget();
+            if (hit) spawnRingWave(hit.point, PALETTE.lightPurple);
+            setHudCombo(0);
+          },
+        );
+      };
+
       handleLaserTrackDragStepRef.current = (
         ndcX: number,
         ndcY: number,
@@ -1863,20 +1953,37 @@ export default function App() {
         },
         // 자동 테스트용: 손 추적이 켜진 것처럼 만들고, 검지 끝 위치(거울 화면 이미지 좌표)를 넣는다
         handFakeRunning: () => setHandStatus({ kind: 'running' }),
-        handInject: (x: number, y: number) => {
+        // gesture: 'open' = 손을 편 상태, 'draw' = 엄지·검지 붙이고 주먹 (시위 당김)
+        handInject: (x: number, y: number, gesture: 'open' | 'draw' = 'open') => {
           const landmarks = Array.from({ length: 21 }, (_, i) => ({
             x: x + Math.sin(i) * 0.03,
             y: y + 0.02 + (i / 20) * 0.12,
           }));
           landmarks[8] = { x, y };
+          const drawing = gesture === 'draw';
           handFrameRef.current = {
             // 테스트 환경이 느려도 손이 계속 보이도록 시각을 앞으로 둔다 (자동 테스트 전용)
             tMs: performance.now() + 1e7,
-            hands: [{ side: 'R', tip: { x, y }, size: 0.15, pinchDist: 0.08, landmarks, score: 1 }],
+            hands: [
+              {
+                side: 'R',
+                tip: { x, y },
+                aim: { x, y },
+                curled: drawing ? 3 : 0,
+                size: 0.15,
+                pinchDist: drawing ? 0.03 : 0.12,
+                landmarks,
+                score: 1,
+              },
+            ],
           };
         },
         getHandCalibration: () => ({ ...handCalRef.current }),
         probeAt: (ndcX: number, ndcY: number) => probeDirectTouchTargetRef.current(ndcX, ndcY),
+        // 자동 테스트용: 5단계 탄도 화살을 바로 쏜다
+        fireBallisticAt: (ndcX: number, ndcY: number, speed: number) => bowFireBallisticRef.current(ndcX, ndcY, speed),
+        getScore: () => recorderRef.current.totalScore,
+        getShots: () => ({ attempted: recorderRef.current.shotsAttempted, misses: recorderRef.current.misses }),
         getPlayerState: () => ({ ...playerStateRef.current }),
         getSettings: () => ({ ...settingsRef.current }),
         rotateYawBy: (deltaRad: number) => {

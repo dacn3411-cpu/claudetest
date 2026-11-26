@@ -6,6 +6,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  ARROW_GRAVITY,
+  BALLISTIC_MAX_SPEED,
+  BALLISTIC_MIN_SPEED,
+  BowGesture,
+  DRAW_FULL_SEC,
+  STRAIGHT_ARROW_SPEED,
+  arrowLaunchSpeed,
+  ballisticPosition,
+  isBallisticLevel,
   DwellFire,
   HAND_DWELL_SEC,
   HAND_TEST_POINTS,
@@ -121,4 +130,53 @@ test('reach calibration is symmetric around the body midline', () => {
   assert.ok(Math.abs(cal.halfX - 0.35) < 0.02, String(cal.halfX));
   assert.ok(Math.abs(imageToReach({ x: 0.5, y: cal.centerY }, cal).x) < 1e-6);
   assert.equal(computeReachCalibration([{ x: 0.5, y: 0.5 }]).sampleCount, 0);
+});
+
+test('bow gesture: pinch + fist draws, draw grows to max, opening the pinch fires', () => {
+  const g = new BowGesture();
+  // 엄지·검지만 붙이고 주먹은 안 쥠 → 시작 안 함
+  assert.equal(g.update({ pinchRatio: 0.2, curled: 0 }, 0.1).drawing, false);
+  // 주먹 + 붙임 → 당기기 시작
+  assert.equal(g.update({ pinchRatio: 0.2, curled: 3 }, 0.1).drawing, true);
+  let r = g.update({ pinchRatio: 0.25, curled: 3 }, 0.6);
+  assert.ok(Math.abs(r.draw - 0.6 / DRAW_FULL_SEC) < 1e-9);
+  // 오래 붙이고 있어도 최대 1
+  r = g.update({ pinchRatio: 0.25, curled: 1 }, 5);
+  assert.equal(r.draw, 1);
+  // 붙인 상태에서 약간 벌어진 정도(0.45)는 아직 안 쏨
+  assert.equal(g.update({ pinchRatio: 0.45, curled: 1 }, 0.05).fired, false);
+  // 떼면 발사
+  r = g.update({ pinchRatio: 0.7, curled: 0 }, 0.05);
+  assert.equal(r.fired, true);
+  assert.equal(r.fireDraw, 1);
+  assert.equal(r.drawing, false);
+});
+
+test('bow gesture: tiny draws cancel, short tracking gaps keep drawing, long ones cancel', () => {
+  const g = new BowGesture();
+  g.update({ pinchRatio: 0.2, curled: 3 }, 0.05);
+  g.update({ pinchRatio: 0.2, curled: 3 }, 0.05);
+  assert.equal(g.update({ pinchRatio: 0.8, curled: 3 }, 0.05).fired, false, 'too little draw');
+  g.update({ pinchRatio: 0.2, curled: 3 }, 0.05);
+  g.update({ pinchRatio: 0.2, curled: 3 }, 0.6);
+  assert.equal(g.update({ pinchRatio: null, curled: 0 }, 0.2).drawing, true);
+  assert.equal(g.update({ pinchRatio: null, curled: 0 }, 0.2).drawing, false, 'lost too long');
+});
+
+test('arrow speed: levels 1-4 ignore the draw, level 5 depends on it and drops', () => {
+  for (const lv of [1, 2, 3, 4]) {
+    assert.equal(isBallisticLevel(lv), false);
+    assert.equal(arrowLaunchSpeed(lv, 0.2), STRAIGHT_ARROW_SPEED);
+    assert.equal(arrowLaunchSpeed(lv, 1), STRAIGHT_ARROW_SPEED);
+  }
+  assert.equal(isBallisticLevel(5), true);
+  assert.equal(arrowLaunchSpeed(5, 0), BALLISTIC_MIN_SPEED);
+  assert.equal(arrowLaunchSpeed(5, 1), BALLISTIC_MAX_SPEED);
+  assert.ok(arrowLaunchSpeed(5, 0.5) > BALLISTIC_MIN_SPEED && arrowLaunchSpeed(5, 0.5) < BALLISTIC_MAX_SPEED);
+  // 같은 거리(15m)에서 느린 화살이 더 많이 떨어진다
+  const o = { x: 0, y: 0, z: 0 };
+  const d = { x: 0, y: 0, z: -1 };
+  const drop = (speed: number) => -ballisticPosition(o, d, speed, ARROW_GRAVITY, 15 / speed).y;
+  assert.ok(drop(BALLISTIC_MIN_SPEED) > drop(BALLISTIC_MAX_SPEED) * 5);
+  assert.ok(Math.abs(drop(30) - 0.5 * ARROW_GRAVITY * 0.25) < 1e-9);
 });

@@ -32,6 +32,24 @@ const GAKGUNG_URL =
   ((import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/') +
   'assets/models/weapons/gakgung.glb';
 
+/** 탄도 화살(5단계)이 지나간 구간에서 처음 부딪힌 곳 */
+export interface ArrowCollision {
+  point: THREE.Vector3;
+  object: THREE.Object3D;
+}
+
+interface BallisticFlight {
+  origin: THREE.Vector3;
+  dir: THREE.Vector3;
+  speed: number;
+  gravity: number;
+  /** 활 쪽에서 보이기 시작해 처음 0.2초 동안 실제 탄도(눈높이 기준)로 합쳐진다 */
+  visualOffset: THREE.Vector3;
+  time: number;
+  collide: (from: THREE.Vector3, to: THREE.Vector3) => ArrowCollision | null;
+  onImpact: (hit: ArrowCollision | null) => void;
+}
+
 interface FlyingArrow {
   mesh: THREE.Group;
   from: THREE.Vector3;
@@ -40,6 +58,7 @@ interface FlyingArrow {
   dur: number;
   stuckSec: number;
   trail: THREE.Mesh;
+  ballistic?: BallisticFlight;
 }
 
 export function aimPointInCameraSpace(
@@ -279,19 +298,11 @@ export class BowRig {
     n.start(t0);
   }
 
-  /**
-   * 화살 쏘기: 조준점 방향으로 hitDistance(m)만큼 날아가 꽂힌다.
-   */
-  release(ndcX: number, ndcY: number, hitDistance: number) {
-    this.camera.updateMatrixWorld(true);
-    const from = new THREE.Vector3();
-    this.nocked.getWorldPosition(from);
-    const dir = aimPointInCameraSpace(ndcX, ndcY, this.camera, 1).normalize();
-    const to = dir.multiplyScalar(Math.max(1.5, hitDistance)).applyMatrix4(this.camera.matrixWorld);
+  private spawnFlying(from: THREE.Vector3, lookTo: THREE.Vector3): { mesh: THREE.Group; trail: THREE.Mesh } {
     const mesh = buildArrow();
     mesh.scale.setScalar(1.6);
     mesh.position.copy(from);
-    mesh.lookAt(to);
+    mesh.lookAt(lookTo);
     mesh.rotateY(Math.PI); // 화살 앞(-Z)이 목표를 향하게
     const trail = new THREE.Mesh(
       new THREE.CylinderGeometry(0.01, 0.002, 1, 6, 1, true),
@@ -299,13 +310,73 @@ export class BowRig {
     );
     this.scene.add(mesh);
     this.scene.add(trail);
-    const dist = from.distanceTo(to);
-    this.flying.push({ mesh, from, to, t: 0, dur: Math.max(0.08, dist / ARROW_SPEED), stuckSec: 0, trail });
+    return { mesh, trail };
+  }
+
+  private afterRelease() {
     this.draw = 0;
     this.drawTarget = 0;
     this.releaseKick = 1;
     this.nocked.visible = false;
     this.playTwang();
+  }
+
+  /**
+   * 5단계 탄도 화살: 눈높이에서 조준 방향으로 speed(m/s)로 날아가며 gravity만큼 떨어진다.
+   * 매 프레임 지나간 구간을 collide로 확인하고, 부딪히면(또는 4초가 지나면) onImpact를 부른다.
+   */
+  releaseBallistic(
+    ndcX: number,
+    ndcY: number,
+    speed: number,
+    gravity: number,
+    collide: BallisticFlight['collide'],
+    onImpact: BallisticFlight['onImpact'],
+  ) {
+    this.camera.updateMatrixWorld(true);
+    const eye = new THREE.Vector3().setFromMatrixPosition(this.camera.matrixWorld);
+    const dir = aimPointInCameraSpace(ndcX, ndcY, this.camera, 1)
+      .applyMatrix4(this.camera.matrixWorld)
+      .sub(eye)
+      .normalize();
+    const from = new THREE.Vector3();
+    this.nocked.getWorldPosition(from);
+    const { mesh, trail } = this.spawnFlying(from, eye.clone().addScaledVector(dir, 10));
+    this.flying.push({
+      mesh,
+      from,
+      to: from.clone(),
+      t: 0,
+      dur: 1,
+      stuckSec: 0,
+      trail,
+      ballistic: {
+        origin: eye,
+        dir,
+        speed,
+        gravity,
+        visualOffset: from.clone().sub(eye),
+        time: 0,
+        collide,
+        onImpact,
+      },
+    });
+    this.afterRelease();
+  }
+
+  /**
+   * 화살 쏘기(1~4단계): 조준점 방향으로 hitDistance(m)만큼 곧게 날아가 꽂힌다.
+   */
+  release(ndcX: number, ndcY: number, hitDistance: number) {
+    this.camera.updateMatrixWorld(true);
+    const from = new THREE.Vector3();
+    this.nocked.getWorldPosition(from);
+    const dir = aimPointInCameraSpace(ndcX, ndcY, this.camera, 1).normalize();
+    const to = dir.multiplyScalar(Math.max(1.5, hitDistance)).applyMatrix4(this.camera.matrixWorld);
+    const { mesh, trail } = this.spawnFlying(from, to);
+    const dist = from.distanceTo(to);
+    this.flying.push({ mesh, from, to, t: 0, dur: Math.max(0.08, dist / ARROW_SPEED), stuckSec: 0, trail });
+    this.afterRelease();
   }
 
   private updateString() {
@@ -356,6 +427,38 @@ export class BowRig {
 
     // 날아가는 화살
     for (const a of this.flying) {
+      const b = a.ballistic;
+      if (b && a.t < 1) {
+        const prevT = b.time;
+        b.time += dt;
+        const at = (t: number) =>
+          new THREE.Vector3(
+            b.origin.x + b.dir.x * b.speed * t,
+            b.origin.y + b.dir.y * b.speed * t - 0.5 * b.gravity * t * t,
+            b.origin.z + b.dir.z * b.speed * t,
+          );
+        const p0 = at(prevT);
+        const p1 = at(b.time);
+        const hit = b.collide(p0, p1);
+        const blend = Math.max(0, 1 - b.time / 0.2);
+        const tail = a.mesh.position.clone();
+        const next = (hit ? hit.point.clone() : p1).addScaledVector(b.visualOffset, blend);
+        // 날아가는 방향(속도)을 따라 화살 머리가 숙여진다
+        const vel = new THREE.Vector3(b.dir.x * b.speed, b.dir.y * b.speed - b.gravity * b.time, b.dir.z * b.speed);
+        a.mesh.position.copy(next);
+        a.mesh.lookAt(next.clone().add(vel));
+        a.mesh.rotateY(Math.PI);
+        const len = Math.max(0.05, tail.distanceTo(next) * 2.5);
+        a.trail.position.lerpVectors(tail, next, 0.5);
+        a.trail.scale.set(1, len, 1);
+        a.trail.lookAt(next);
+        a.trail.rotateX(Math.PI / 2);
+        if (hit || b.time > 4 || p1.y < b.origin.y - 60) {
+          a.t = 1;
+          b.onImpact(hit);
+        }
+        continue;
+      }
       if (a.t < 1) {
         a.t = Math.min(1, a.t + dt / a.dur);
         const tail = a.mesh.position.clone();

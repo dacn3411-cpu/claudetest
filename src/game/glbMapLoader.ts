@@ -63,12 +63,13 @@ export const PLAYER_EYE_HEIGHT = 1.7;
 /** 1F -> 2F floor height the A Tower map was first tuned to (x PLAYER scale). */
 export const ATOWER_BASE_FLOOR_HEIGHT = 3.6;
 /**
- * The A Tower map is shown this much larger than that first tuning (1F -> 2F = 3.6 x 1.4 = 5.04 m), so
- * rooms, corridors and the plaza have room for flying targets. Target sizes and distances stay in meters.
+ * The A Tower map is shown this much larger than that first tuning, so rooms, corridors and the plaza
+ * have room for flying targets. Target sizes and distances stay in meters.
+ * 2.1 = 이전 1.4 × 1.5: 사람 키(눈높이 1.7m)는 그대로 두고 구조물 모양은 유지한 채 맵만 1.5배 넓힌다 (모든 모드 공통).
  */
-export const ATOWER_MAP_SCALE_BOOST = 1.4;
-/** Walking speed on the loaded map (the built-in arena uses 6.0 m/s); a little faster for the larger map. */
-export const MAP_WALK_SPEED = 7.0;
+export const ATOWER_MAP_SCALE_BOOST = 2.1;
+/** Walking speed on the loaded map (the built-in arena uses 6.0 m/s); faster for the 1.5x larger map. */
+export const MAP_WALK_SPEED = 8.5;
 export const MIN_HEADROOM_UNITS = 2.5;
 export const SPAWN_SEARCH_RADIUS = 15;
 
