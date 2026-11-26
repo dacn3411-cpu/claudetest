@@ -89,6 +89,7 @@ import {
 } from './game/rules';
 import { soundEngine } from './game/audio';
 import HandTestPanel, { primaryHand } from './hand/HandTestPanel';
+import { BowRig } from './game/bowRig';
 import { HandTracker, type HandFrame, type TrackerStatus } from './hand/handTracker';
 import { DwellFire, HAND_LEVEL_COUNT, edgeYawRate, edgeZone, handTipToNdc } from './hand/handControl';
 import { DEFAULT_CALIBRATION, OneEuroFilter2D, type ReachCalibration } from './hand/handRules';
@@ -462,8 +463,12 @@ export default function App() {
       isDirectTouch?: boolean;
       isLaserTraceSweep?: boolean;
       fromWeaponRig?: boolean;
+      fromBow?: boolean;
     }) => boolean
   >(() => false);
+  // 손 조작용 활: 총 대신 화면에 들고, 손가락 쪽으로 겨누고 0.5초 동안 시위를 당겨 쏜다
+  const bowRigRef = useRef<BowRig | null>(null);
+  const bowFireRef = useRef<(ndcX: number, ndcY: number) => void>(() => {});
   const probeDirectTouchTargetRef = useRef<(ndcX: number, ndcY: number) => boolean>(
     () => false,
   );
@@ -538,18 +543,23 @@ export default function App() {
         filter.reset();
         dwell.reset();
         lostSec = 0;
+        bowRigRef.current?.setAim(null);
+        bowRigRef.current?.setDraw(0);
         return;
       }
       const hand = primaryHand(handFrameRef.current);
       if (!hand) {
         hideCursor();
         dwell.update(null, dt);
+        bowRigRef.current?.setAim(null);
+        bowRigRef.current?.setDraw(0);
         lostSec += dt;
         if (lostSec > 0.8 && inputStateRef.current.laserDragTargetId) releaseLaserTrackDragRef.current();
         return;
       }
       lostSec = 0;
       const ndc = filter.filter(handTipToNdc(hand.tip, handCalRef.current), now / 1000);
+      bowRigRef.current?.setAim(ndc);
 
       // 가장자리 회전: 제자리에서 좌우 ±90° 안
       const rate = edgeYawRate(ndc.x);
@@ -565,9 +575,13 @@ export default function App() {
       } else {
         const onTarget = probeDirectTouchTargetRef.current(ndc.x, ndc.y);
         if (dwell.update(onTarget, dt)) {
-          shootFnRef.current({ ndcX: ndc.x, ndcY: ndc.y, isDirectTouch: true });
+          // 다 당긴 시위를 놓는다: 화살이 날아가고 같은 순간 명중 판정
+          bowFireRef.current(ndc.x, ndc.y);
+          shootFnRef.current({ ndcX: ndc.x, ndcY: ndc.y, isDirectTouch: true, fromBow: true });
         }
       }
+      // 과녁에 손가락을 대고 있는 동안 시위가 당겨진다
+      bowRigRef.current?.setDraw(inputStateRef.current.laserDragTargetId ? 0 : dwell.progress);
 
       // 화면 커서와 가장자리 표시
       const el = handCursorRef.current;
@@ -719,6 +733,9 @@ export default function App() {
       // First-person weapon rig (replaces the old blaster view model, which is hidden in the loop)
       weaponRigRef.current?.dispose();
       weaponRigRef.current = new WeaponRigController(scene, camera, setWeaponHud);
+      weaponRigRef.current.setHiddenByMode(true);
+      bowRigRef.current?.dispose();
+      bowRigRef.current = new BowRig(scene, camera);
 
       // Daytime lighting rig without AmbientLight blowout: HemisphereLight (0.8) + main sun DirectionalLight (1.15) + opposite fill DirectionalLight (0.3)
       const hemiLight = new THREE.HemisphereLight('#dceeff', '#b5a895', 0.8);
@@ -1169,6 +1186,7 @@ export default function App() {
         isDirectTouch?: boolean;
         isLaserTraceSweep?: boolean;
         fromWeaponRig?: boolean;
+        fromBow?: boolean;
       }): boolean => {
         if (phaseRef.current !== 'PLAYING') return false;
         const icPhase = indoorChallengeRef.current.phase;
@@ -1186,6 +1204,8 @@ export default function App() {
         const isLaserTraceSweep = Boolean(opts?.isLaserTraceSweep);
         // the weapon rig enforces each weapon's own fire rate, so its shots skip this cooldown
         const fromWeaponRig = Boolean(opts?.fromWeaponRig);
+        // 활은 자기 화살·소리를 쓰므로 옛 블래스터의 반동·섬광·빔·소리를 끈다
+        const fromBow = Boolean(opts?.fromBow);
         const minCooldown = isLaserTraceSweep ? 0.11 : 0.16;
         const perfNowSec = performance.now() * 0.001;
         if (!isDirectTouch && !fromWeaponRig && perfNowSec - ps.lastShotPerfSec < minCooldown) return false;
@@ -1201,7 +1221,7 @@ export default function App() {
 
         // Blaster snappy tactical recoil, 50ms muzzle flash & fast-fading tracer beam
         // (the weapon rig draws its own recoil, flash, tracer and sound)
-        if (!fromWeaponRig) {
+        if (!fromWeaponRig && !fromBow) {
           ps.blasterRecoilTimer = 0.14;
           ps.recoilZ = 0.045;
           ps.recoilPitch = 0.068;
@@ -1461,6 +1481,19 @@ export default function App() {
             markerRadiusPx,
           };
         });
+      };
+
+      // 활 쏘기: 조준점 방향으로 처음 맞는 과녁·벽까지 화살을 날린다 (점수 판정은 shootFn이 한다)
+      bowFireRef.current = (ndcX: number, ndcY: number) => {
+        shootNdc.set(ndcX, ndcY);
+        raycaster.setFromCamera(shootNdc, camera);
+        const live = manager.activeTargets.filter((t) => !t.hit && !t.dying);
+        for (const t of live) t.visual.root.updateMatrixWorld(true);
+        const env = manager.isIndoorChallengeActive
+          ? builtWorld.indoorEnvironmentObstacles
+          : [...builtWorld.environmentObstacles, ...manager.staticLevelObstacles];
+        const hits = raycaster.intersectObjects([...live.map((t) => t.visual.colliderMesh), ...env], true);
+        bowRigRef.current?.release(ndcX, ndcY, hits.length > 0 ? hits[0].distance : 30);
       };
 
       handleLaserTrackDragStepRef.current = (
@@ -2084,6 +2117,7 @@ export default function App() {
           const md = weaponMouseDeltaRef.current;
           const isMoving = curPhase === 'PLAYING' && Math.hypot(ps.vx, ps.vz) > 0.4;
           weaponRig.update(dt, isMoving, md.x, md.y);
+          bowRigRef.current?.update(dt);
           md.x = 0;
           md.y = 0;
           if (curPhase === 'PLAYING' && !weaponModalOpenRef.current && isFireHeldRef.current) {
@@ -2904,6 +2938,8 @@ export default function App() {
         window.visualViewport?.removeEventListener('resize', handleResize);
         weaponRigRef.current?.dispose();
         weaponRigRef.current = null;
+        bowRigRef.current?.dispose();
+        bowRigRef.current = null;
         if (composer) {
           composer.dispose();
         }
@@ -4514,7 +4550,8 @@ export default function App() {
               style={{
                 width: isTabletActive ? 34 : settings.crosshairSize,
                 height: isTabletActive ? 34 : settings.crosshairSize,
-                visibility: weaponHud.isScoped ? 'hidden' : undefined,
+                // 손 조작 게임은 손가락 커서가 조준점이라 가운데 십자선을 숨긴다
+                visibility: weaponHud.isScoped || handTestPassed ? 'hidden' : undefined,
               }}
             >
               <svg viewBox="0 0 36 36" className="w-full h-full">

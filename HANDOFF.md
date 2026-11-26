@@ -17,6 +17,8 @@
 |---|---|
 | 손 조작 규칙 (조준점 변환, 가장자리 회전, 0.5초 머무르기, 손 인식 테스트) + 테스트 | `src/hand/handControl.ts`, `src/hand/handControl.test.ts` |
 | 손 인식 테스트 패널 (메뉴) | `src/hand/HandTestPanel.tsx` |
+| 총 대신 활: 손가락 쪽으로 겨누고, 과녁에 대고 있는 0.5초 동안 시위가 당겨지며 화살촉이 빛나고, 다 당기면 화살이 날아가 꽂힘 (코드로 만든 모델, 합성 효과음) | `src/game/bowRig.ts`, `src/App.tsx` (`bowRigRef`, `bowFireRef`) |
+| 총 숨김·발사 막기, 가운데 십자선 숨김 | `src/game/weaponSystem.ts` `setHiddenByMode`, `src/App.tsx` |
 | 웹캠 손 추적 (MediaPipe, 카메라 영상은 안 보임) | `src/hand/handTracker.ts` |
 | 떨림 보정·팔 뻗기 범위 보정 수학 | `src/hand/handRules.ts` |
 | 메뉴: 모드 카드 → 손 인식 테스트, 난이도 1~5, 시작 버튼 잠금 / 게임 중 손 조작 루프·커서·가장자리 표시 / 수평 시야 90°→100° / 무기 버튼 막대 숨김 / 마우스 잠금 안 함 | `src/App.tsx` |

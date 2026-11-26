@@ -724,6 +724,8 @@ export class WeaponRigController {
   private bobTime = 0;
 
   private onHudChange?: (state: WeaponHudState) => void;
+  /** 손 조작 게임에서는 총 대신 활을 쓰므로 총을 숨기고 쏘지 않는다 */
+  private hiddenByMode = false;
 
   constructor(
     scene: THREE.Scene,
@@ -950,7 +952,7 @@ export class WeaponRigController {
     if (this.isScoped === nextScope) return;
 
     this.isScoped = nextScope;
-    this.rigGroup.visible = !nextScope;
+    this.rigGroup.visible = !nextScope && !this.hiddenByMode;
     this.audio.playMechanicalClick(nextScope ? 820 : 640);
     this.emitHud();
   }
@@ -971,11 +973,17 @@ export class WeaponRigController {
     this.emitHud();
   }
 
+  /** 총을 숨기고(다른 무기를 쓸 때) 발사도 막는다 */
+  public setHiddenByMode(hidden: boolean) {
+    this.hiddenByMode = hidden;
+    this.rigGroup.visible = !hidden && !this.isScoped;
+  }
+
   public tryFire(
     shootableObjects: THREE.Object3D[],
     onHit?: (result: ShotResult) => void
   ): ShotResult | null {
-    if (!this.isFiring || this.isReloading) return null;
+    if (this.hiddenByMode || !this.isFiring || this.isReloading) return null;
 
     const spec = this.getCurrentSpec();
     const isAuto = this.currentId === 'rifle' ? this.rifleFireMode === 'AUTO' : spec.automatic;
