@@ -106,7 +106,8 @@ export class HandTracker {
         vision.HandLandmarker.createFromOptions(fileset, {
           baseOptions: { modelAssetPath: MODEL_URL, delegate },
           runningMode: 'VIDEO',
-          numHands: 2,
+          // 게임은 가장 크게 보이는 손 하나만 쓰므로 1개만 찾는다 (인식 계산이 가벼워진다)
+          numHands: 1,
           minHandDetectionConfidence: 0.5,
           minHandPresenceConfidence: 0.5,
           minTrackingConfidence: 0.5,

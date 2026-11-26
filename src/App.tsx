@@ -224,6 +224,8 @@ export default function App() {
   handTestPassedRef.current = handTestPassed;
   const handCalRef = useRef<ReachCalibration>(DEFAULT_CALIBRATION);
   const handCursorRef = useRef<HTMLDivElement | null>(null);
+  // 화면 왼쪽 아래 FPS 표시 (매 초 글자만 바꿔 React를 다시 그리지 않는다)
+  const fpsElRef = useRef<HTMLDivElement | null>(null);
   const handRingRef = useRef<SVGCircleElement | null>(null);
   const handEdgeLeftRef = useRef<HTMLDivElement | null>(null);
   const handEdgeRightRef = useRef<HTMLDivElement | null>(null);
@@ -804,6 +806,10 @@ export default function App() {
 
       // Post-Processing Pipeline tuned so matte architecture never blooms and only emissive flashes/tracers/lasers glow
       let composer: EffectComposer | null = null;
+      // 자동 화질 조절이 끄고 켤 수 있게 효과 단계를 잡아 둔다
+      let aoPassRef: { enabled: boolean } | null = null;
+      let inkPassRef: { enabled: boolean } | null = null;
+      let bloomPassRef: { enabled: boolean } | null = null;
       if (!isSoftwareGl && !lowQ) {
         // 4x MSAA render target: post-processing otherwise loses the canvas anti-aliasing
         const pr = renderer.getPixelRatio();
@@ -822,7 +828,10 @@ export default function App() {
         aoPass.setSize = (w: number, h: number) => aoSetSize(Math.max(1, Math.floor(w / 2)), Math.max(1, Math.floor(h / 2)));
         aoPass.setSize(initW, initH);
         composer.addPass(aoPass);
-        composer.addPass(new InkOutlinePass(camera, initW, initH));
+        aoPassRef = aoPass;
+        const inkPass = new InkOutlinePass(camera, initW, initH);
+        inkPassRef = inkPass;
+        composer.addPass(inkPass);
         const bloomPass = new UnrealBloomPass(
           new THREE.Vector2(initW, initH),
           0.08,
@@ -830,6 +839,7 @@ export default function App() {
           1.2,
         );
         composer.addPass(bloomPass);
+        bloomPassRef = bloomPass;
         composer.addPass(new OutputPass());
         composer.addPass(createGradePass());
       } else if (!isSoftwareGl) {
@@ -1877,6 +1887,34 @@ export default function App() {
       // Main Animation Loop
       let frameId = 0;
       let lastTimeMs = performance.now();
+      // 화면(React) 갱신 간격: 미니맵 초당 8번, 방향 힌트 초당 12번 (매 프레임 다시 그리면 무겁다)
+      let radarAccum = 1;
+      let hintUiAccum = 1;
+      // FPS 측정과 자동 화질 조절 (3초 동안 48FPS 미만이면 무거운 효과부터 한 단계씩 끈다)
+      let fpsFrames = 0;
+      let fpsAccum = 0;
+      let lowFpsSec = 0;
+      let qualityStep = 0;
+      const qualityLabels = composer
+        ? ['고화질', '고화질(AO 끔)', '중간 화질', '중간 화질(해상도↓)', '저화질(그림자 끔)']
+        : [renderer.shadowMap.enabled ? '기본 화질' : '저화질'];
+      const lowerQuality = () => {
+        qualityStep += 1;
+        if (qualityStep === 1 && aoPassRef) aoPassRef.enabled = false;
+        else if (qualityStep === 2) {
+          if (inkPassRef) inkPassRef.enabled = false;
+          if (bloomPassRef) bloomPassRef.enabled = false;
+        } else if (qualityStep === 3) {
+          renderer.setPixelRatio(1);
+          composer?.setPixelRatio(1);
+          const w = container.clientWidth || window.innerWidth;
+          const h = container.clientHeight || window.innerHeight;
+          renderer.setSize(w, h);
+          composer?.setSize(w, h);
+        } else if (qualityStep === 4) {
+          dirLight.castShadow = false;
+        }
+      };
 
       const finishGameSession = () => {
         // Leave PLAYING before releasing pointer lock: the pointerlockchange handler pauses
@@ -2161,6 +2199,29 @@ export default function App() {
 
         const curPhase = phaseRef.current;
         const ps = playerStateRef.current;
+
+        radarAccum += rawDt;
+        hintUiAccum += rawDt;
+        fpsFrames += 1;
+        fpsAccum += rawDt;
+        if (fpsAccum >= 1) {
+          const fps = Math.round(fpsFrames / fpsAccum);
+          // 게임 중에만 화질을 낮춘다 (메뉴는 손 인식 테스트 등으로 잠깐 느릴 수 있어서)
+          if (curPhase === 'PLAYING' && composer && fps < 48 && qualityStep < qualityLabels.length - 1) {
+            lowFpsSec += fpsAccum;
+            if (lowFpsSec >= 3) {
+              lowFpsSec = 0;
+              lowerQuality();
+            }
+          } else {
+            lowFpsSec = 0;
+          }
+          if (fpsElRef.current) {
+            fpsElRef.current.textContent = `${fps} FPS · ${qualityLabels[Math.min(qualityStep, qualityLabels.length - 1)]}`;
+          }
+          fpsFrames = 0;
+          fpsAccum = 0;
+        }
 
         // 1. Animate World Sky Ring, Clouds, Drones & Banners
         builtWorld.animated.skyRing.rotation.z += 0.007 * dt;
@@ -2733,10 +2794,13 @@ export default function App() {
                     focusTarget.hintCounted = true;
                     recorderRef.current.recordDirectionHintShown();
                   }
-                  setDirectionHintUi({
-                    ...hintCalc,
-                    targetColor: focusTarget.visualColor,
-                  });
+                  if (hintUiAccum >= 0.08) {
+                    hintUiAccum = 0;
+                    setDirectionHintUi({
+                      ...hintCalc,
+                      targetColor: focusTarget.visualColor,
+                    });
+                  }
                 } else {
                   setDirectionHintUi(null);
                 }
@@ -2881,6 +2945,9 @@ export default function App() {
             }
 
             // Update Valorant-style rotating top-down Minimap state (filter out 2F-only colliders & outside keepBox)
+            // 초당 8번만: 매 프레임 갱신하면 게임 화면 전체(React)가 프레임마다 다시 그려진다
+            if (radarAccum >= 0.12) {
+            radarAccum = 0;
             const kb = glbRuntimeRef.current?.keepBox;
             const radarKeepBox =
               kb && !kb.isEmpty()
@@ -2968,6 +3035,7 @@ export default function App() {
               targets: radarTargets,
               obstacles: radarObstacles,
             });
+            }
 
             // Continuous Laser Beam hold-drag check while holding click/tap on a Type H target
             if (inputStateRef.current.laserDragTargetId) {
@@ -5219,6 +5287,16 @@ export default function App() {
           )}
         </>
       )}
+      {/* FPS 표시: 실제 실행 프레임과 지금 화질 */}
+      <div
+        ref={fpsElRef}
+        data-testid="fps-counter"
+        className="fixed left-2 bottom-2 z-50 pointer-events-none rounded-md px-2 py-0.5 text-[11px] font-bold tabular-nums"
+        style={{ background: 'rgba(15,23,42,0.55)', color: '#E2E8F0' }}
+      >
+        FPS 측정 중…
+      </div>
+
       {/* 손 조작 커서 (검지 끝) + 가장자리 회전 표시. 위치는 매 프레임 ref로 바꾼다 */}
       {phase === 'PLAYING' && handTestPassed && (
         <div className="fixed inset-0 z-40 pointer-events-none" data-testid="hand-cursor-layer">
