@@ -95,6 +95,7 @@ import {
   ARROW_GRAVITY,
   BowGesture,
   DwellFire,
+  bowPoseHint,
   HAND_LEVEL_COUNT,
   arrowLaunchSpeed,
   edgeYawRate,
@@ -227,6 +228,8 @@ export default function App() {
   // 화면 왼쪽 아래 FPS 표시 (매 초 글자만 바꿔 React를 다시 그리지 않는다)
   const fpsElRef = useRef<HTMLDivElement | null>(null);
   const handRingRef = useRef<SVGCircleElement | null>(null);
+  // 조준점 아래 활 자세 안내 ("엄지·검지 끝을 붙여요", "손가락을 모두 펴면 발사" 등)
+  const handHintRef = useRef<HTMLDivElement | null>(null);
   const handEdgeLeftRef = useRef<HTMLDivElement | null>(null);
   const handEdgeRightRef = useRef<HTMLDivElement | null>(null);
   const [guideModalTab, setGuideModalTab] = useState<'guide' | 'controls' | null>(null);
@@ -571,7 +574,7 @@ export default function App() {
       if (!hand) {
         hideCursor();
         dwell.update(null, dt);
-        const g = gesture.update({ pinchRatio: null, curled: 0 }, dt);
+        const g = gesture.update(null, dt);
         bowRigRef.current?.setAim(null);
         bowRigRef.current?.setDraw(g.draw);
         lostSec += dt;
@@ -598,9 +601,14 @@ export default function App() {
         gesture.reset();
         bowRigRef.current?.setDraw(0);
       } else {
-        const g = gesture.update({ pinchRatio: hand.pinchDist / Math.max(1e-6, hand.size), curled: hand.curled }, dt);
+        // 손가락·손바닥 21개 관절로 판정한 자세: 엄지·검지 맞닿음 + 중지·약지·새끼 주먹 → 당기기, 모두 펴면 발사
+        const g = gesture.update(hand.pose, dt);
         bowRigRef.current?.setDraw(g.draw);
         ringProgress = g.draw;
+        if (handHintRef.current) {
+          const hint = bowPoseHint(hand.pose, g.state);
+          if (handHintRef.current.textContent !== hint) handHintRef.current.textContent = hint;
+        }
         if (g.fired) {
           const level = settingsRef.current.difficulty;
           if (isBallisticLevel(level)) {
@@ -1991,14 +1999,24 @@ export default function App() {
         },
         // 자동 테스트용: 손 추적이 켜진 것처럼 만들고, 검지 끝 위치(거울 화면 이미지 좌표)를 넣는다
         handFakeRunning: () => setHandStatus({ kind: 'running' }),
-        // gesture: 'open' = 손을 편 상태, 'draw' = 엄지·검지 붙이고 주먹 (시위 당김)
-        handInject: (x: number, y: number, gesture: 'open' | 'draw' = 'open') => {
+        // gesture: 'open' = 손가락을 모두 편 상태, 'draw' = 엄지·검지 맞닿고 주먹 (시위 당김), 'fist' = 주먹만
+        handInject: (x: number, y: number, gesture: 'open' | 'draw' | 'fist' = 'open') => {
           const landmarks = Array.from({ length: 21 }, (_, i) => ({
             x: x + Math.sin(i) * 0.03,
             y: y + 0.02 + (i / 20) * 0.12,
           }));
           landmarks[8] = { x, y };
           const drawing = gesture === 'draw';
+          const fist = gesture !== 'open';
+          const pose = {
+            pinchRatio: drawing ? 0.15 : gesture === 'fist' ? 0.7 : 0.9,
+            thumbIndexTouch: drawing,
+            curled: { middle: fist, ring: fist, pinky: fist },
+            curledCount: fist ? 3 : 0,
+            extendedCount: fist ? 0 : 4,
+            drawPose: drawing,
+            openHand: !fist,
+          };
           handFrameRef.current = {
             // 테스트 환경이 느려도 손이 계속 보이도록 시각을 앞으로 둔다 (자동 테스트 전용)
             tMs: performance.now() + 1e7,
@@ -2007,7 +2025,7 @@ export default function App() {
                 side: 'R',
                 tip: { x, y },
                 aim: { x, y },
-                curled: drawing ? 3 : 0,
+                pose,
                 size: 0.15,
                 pinchDist: drawing ? 0.03 : 0.12,
                 landmarks,
@@ -2017,6 +2035,8 @@ export default function App() {
           };
         },
         getHandCalibration: () => ({ ...handCalRef.current }),
+        // 지금 보이는 손의 활 자세 판정 (손가락별 접힘·폄, 엄지·검지 거리)
+        getHandPose: () => primaryHand(handFrameRef.current)?.pose ?? null,
         probeAt: (ndcX: number, ndcY: number) => probeDirectTouchTargetRef.current(ndcX, ndcY),
         // 자동 테스트용: 5단계 탄도 화살을 바로 쏜다
         fireBallisticAt: (ndcX: number, ndcY: number, speed: number) => bowFireBallisticRef.current(ndcX, ndcY, speed),
@@ -5332,6 +5352,12 @@ export default function App() {
               />
               <circle cx="32" cy="32" r="7" fill="#0EA5E9" stroke="#FFFFFF" strokeWidth="3" />
             </svg>
+            <div
+              ref={handHintRef}
+              data-testid="hand-pose-hint"
+              className="absolute left-1/2 top-9 -translate-x-1/2 whitespace-nowrap rounded-lg px-2 py-0.5 text-xs font-black"
+              style={{ background: 'rgba(15,23,42,0.62)', color: '#F8FAFC' }}
+            />
           </div>
         </div>
       )}

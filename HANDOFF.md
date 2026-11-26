@@ -18,7 +18,9 @@
 | 손 조작 규칙 (조준점 변환, 가장자리 회전, 0.5초 머무르기, 손 인식 테스트) + 테스트 | `src/hand/handControl.ts`, `src/hand/handControl.test.ts` |
 | 손 인식 테스트 패널 (메뉴) | `src/hand/HandTestPanel.tsx` |
 | 국궁(각궁) 모델: **Blender(bpy 4.2)**로 모델링 — 서브디비전·베벨, 코드로 만든 텍스처(화피 껍질눈, 고자 나뭇결, 줌통 천 짜임), 물소뿔 광택 → `public/assets/models/weapons/gakgung.glb` (800KB). 다시 만들기: `venv/bin/python tools/bow/build_gakgung_blender.py` (Blender 없을 때 간단한 버전: `node tools/bow/build_gakgung.mjs`) | `tools/bow/` |
-| 활 쏘기 손동작: **엄지·검지 붙이고 나머지 손가락 주먹 → 시위 당김(1.2초에 최대) → 엄지·검지 떼면 발사**. 조준점은 손바닥 중심. 1~4단계는 당긴 정도와 상관없이 곧게(낙차 없이) 날아가 바로 판정, **5단계는 당긴 정도에 따라 탄속 16~60m/s + 중력 낙차**로 날아가 맞은 곳에서 판정. 레이저 트랙만 시작점에 0.5초 대면 따라 그리기 | `src/hand/handControl.ts` (`BowGesture`, `arrowLaunchSpeed`), `src/game/bowRig.ts` (`releaseBallistic`), `src/App.tsx` |
+| 활 쏘기 손동작 (손가락·손바닥 **21개 관절, 3D 깊이까지** 판정): **엄지·검지 끝 맞닿음 + 중지·약지·새끼 모두 접힘**을 0.12초 유지하면 시위 당김(1.2초에 최대) → **손가락을 모두 펴면 발사**(네 손가락 중 3개 이상 폄). 엄지·검지만 떼고 주먹이면 발사 안 함, 자세가 0.5초 넘게 풀리면 취소. 조준점 아래 자세 안내 문구. 조준점은 손바닥 중심. 1~4단계는 곧게(낙차 없이) 바로 판정, **5단계는 당긴 정도에 따라 탄속 16~60m/s + 중력 낙차**. 레이저 트랙만 시작점에 0.5초 대면 따라 그리기 | `src/hand/handControl.ts` (`evaluateBowPose`, `BowGesture`, `bowPoseHint`, `arrowLaunchSpeed`), `src/hand/handTracker.ts`, `src/game/bowRig.ts`, `src/App.tsx` |
+| 성능: 미니맵·방향 힌트 화면 갱신을 초당 8·12번으로 제한(매 프레임 전체 다시 그리기 제거), 왼쪽 아래 FPS 표시, 게임 중 3초간 48FPS 미만이면 무거운 효과부터 단계적으로 끔(AO → 외곽선·빛번짐 → 해상도 → 그림자), 손 인식은 손 1개만 | `src/App.tsx`, `src/hand/handTracker.ts` |
+| 배포: GitHub Pages 자동 배포 — https://dacn3411-cpu.github.io/claudetest/ (main에 푸시하면 2~3분 뒤 반영) | `.github/workflows/pages.yml` |
 | 손 인식 테스트에 "활 쏘기 연습" 단계 추가 (점 5개 → 당겼다 떼기) | `src/hand/HandTestPanel.tsx` |
 | 맵 1.5배 확대 (사람 키 그대로, 모든 모드), 걷는 속도 7→8.5m/s | `src/game/glbMapLoader.ts` `ATOWER_MAP_SCALE_BOOST` 1.4→2.1 |
 | 총 숨김·발사 막기, 가운데 십자선 숨김 | `src/game/weaponSystem.ts` `setHiddenByMode`, `src/App.tsx` |

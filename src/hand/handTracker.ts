@@ -8,6 +8,7 @@
  */
 
 import type { HandSide, Vec2 } from './handRules';
+import { evaluateBowPose, type BowPose } from './handControl';
 
 const TASKS_VISION_VERSION = '1.2.3';
 const WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`;
@@ -20,8 +21,8 @@ export interface TrackedHand {
   tip: Vec2;
   /** 손바닥 중심 (손목·검지/중지/약지/새끼 뿌리 평균) — 활 조준점. 손가락을 떼도 덜 흔들린다 */
   aim: Vec2;
-  /** 중지·약지·새끼 중 접힌(주먹 쥔) 손가락 수 0~3 */
-  curled: number;
+  /** 21개 관절(3D)로 판정한 활 쏘기 자세: 엄지·검지 맞닿음, 손가락별 접힘/폄 */
+  pose: BowPose;
   /** 손목–중지 뿌리 거리 (이미지 좌표). 카메라에 가까울수록 커짐 → 뻗기 감지 */
   size: number;
   /** 엄지 끝–검지 끝 거리 → 집기 감지 */
@@ -57,7 +58,7 @@ type Landmarker = {
     video: HTMLVideoElement,
     ts: number,
   ) => {
-    landmarks: Array<Array<{ x: number; y: number }>>;
+    landmarks: Array<Array<{ x: number; y: number; z?: number }>>;
     handedness?: Array<Array<{ categoryName: string; score: number }>>;
     handednesses?: Array<Array<{ categoryName: string; score: number }>>;
   };
@@ -161,6 +162,8 @@ export class HandTracker {
       if (!raw || raw.length < 21) return;
       // 거울 화면: x를 뒤집는다
       const lm = raw.map((p) => ({ x: 1 - p.x, y: p.y }));
+      // 자세 판정은 깊이(z)까지 쓴다: 카메라 쪽으로 말린 손가락도 접힘으로 잡힌다
+      const lm3 = raw.map((p) => ({ x: 1 - p.x, y: p.y, z: (p as { z?: number }).z ?? 0 }));
       const cat = handed[i]?.[0];
       // MediaPipe는 원본(뒤집지 않은) 영상 기준으로 아동의 실제 손을 알려 준다
       let side: HandSide = cat?.categoryName === 'Left' ? 'L' : 'R';
@@ -171,17 +174,11 @@ export class HandTracker {
         x: palmIdx.reduce((acc, k) => acc + lm[k].x, 0) / palmIdx.length,
         y: palmIdx.reduce((acc, k) => acc + lm[k].y, 0) / palmIdx.length,
       };
-      // 손가락 끝이 둘째 마디보다 손목에 가까우면 접힌 것
-      const curled = [
-        [12, 10],
-        [16, 14],
-        [20, 18],
-      ].filter(([tipI, pipI]) => dist(tipI, 0) < dist(pipI, 0)).length;
       out.push({
         side,
         tip: lm[8],
         aim,
-        curled,
+        pose: evaluateBowPose(lm3),
         size: dist(0, 9),
         pinchDist: dist(4, 8),
         landmarks: lm,

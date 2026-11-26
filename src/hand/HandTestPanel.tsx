@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import {
   BowGesture,
+  bowPoseHint,
   HAND_DWELL_SEC,
   HAND_TEST_POINTS,
   HAND_TEST_RADIUS,
@@ -48,6 +49,7 @@ export default function HandTestPanel({ frameRef, status, passed, onStartCamera,
   // 점 5개를 다 짚은 뒤: 활 쏘기 연습 (엄지·검지 붙이고 주먹 → 당기기 → 떼기)
   const gestureRef = useRef(new BowGesture());
   const drawRef = useRef(0);
+  const hintRef = useRef('');
 
   // 다시 테스트할 때 처음부터
   useEffect(() => {
@@ -81,13 +83,10 @@ export default function HandTestPanel({ frameRef, status, passed, onStartCamera,
         testRef.current = r.state;
         if (r.advanced) setStep(r.state.index);
         if (r.state.index >= HAND_TEST_POINTS.length) {
-          const g = gestureRef.current.update(
-            hand
-              ? { pinchRatio: hand.pinchDist / Math.max(1e-6, hand.size), curled: hand.curled }
-              : { pinchRatio: null, curled: 0 },
-            dt,
-          );
+          // 손가락·손바닥 21개 관절로 판정: 엄지·검지 맞닿음 + 중지·약지·새끼 주먹 → 당기기, 모두 펴면 발사
+          const g = gestureRef.current.update(hand ? hand.pose : null, dt);
           drawRef.current = g.draw;
+          hintRef.current = bowPoseHint(hand ? hand.pose : null, g.state);
           if (g.fired && g.fireDraw >= 0.3) {
             drawRef.current = 0;
             onPassedRef.current(calibrationFromTest(r.state));
@@ -173,7 +172,7 @@ export default function HandTestPanel({ frameRef, status, passed, onStartCamera,
         ctx.fillStyle = '#2B2A5E';
         ctx.font = "700 13px Jua, 'Noto Sans KR', sans-serif";
         ctx.textAlign = 'center';
-        ctx.fillText('시위 당김', w / 2, by - 10);
+        ctx.fillText(hintRef.current ? `시위 당김 · ${hintRef.current}` : '시위 당김', w / 2, by - 10);
       }
     };
     raf = requestAnimationFrame(loop);
@@ -215,7 +214,7 @@ export default function HandTestPanel({ frameRef, status, passed, onStartCamera,
             {status.kind === 'idle' && (
               <>
                 <p className="text-sm font-bold text-slate-700">
-                  화면에서 60cm쯤 떨어져 가운데에 앉아요. 손바닥으로 조준하고, 엄지·검지를 붙이고 주먹을 쥐면 시위를 당겨요. 떼면 화살이 날아가요.
+                  화면에서 60cm쯤 떨어져 가운데에 앉아요. 손바닥으로 조준하고, 엄지·검지 끝을 맞대고 나머지 손가락을 주먹 쥐면 시위를 당겨요. 손가락을 모두 펴면 화살이 날아가요.
                 </p>
                 <button
                   type="button"
@@ -252,7 +251,7 @@ export default function HandTestPanel({ frameRef, status, passed, onStartCamera,
               : !handSeen
                 ? '손이 안 보여요. 손바닥을 카메라 쪽으로 들어 주세요'
                 : step >= total
-                  ? '활 쏘기 연습: 엄지·검지를 붙이고 나머지 손가락은 주먹 → 막대가 차면 엄지·검지를 떼요'
+                  ? '활 쏘기 연습: 엄지·검지 끝을 맞대고 중지·약지·새끼는 주먹 → 막대가 차면 손가락을 모두 펴요'
                   : `초록 점(${current.label})에 손바닥 가운데를 0.5초 대요`}
           </span>
           {passed && (

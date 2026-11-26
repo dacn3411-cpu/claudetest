@@ -171,25 +171,104 @@ export function calibrationFromTest(state: HandTestState): ReachCalibration {
 
 // ───────────────────────────── 활 쏘기 손동작 ─────────────────────────────
 
-/** 엄지·검지 끝 거리 ÷ 손 크기가 이보다 작으면 "붙임" */
-export const PINCH_CLOSE_RATIO = 0.35;
-/** 당기는 중에는 이보다 벌어져야 "뗌" (흔들림으로 잘못 쏘지 않게 여유를 둔다) */
-export const PINCH_OPEN_RATIO = 0.5;
-/** 주먹으로 볼 접힌 손가락 수 (중지·약지·새끼 중) */
-export const FIST_MIN_CURLED = 2;
-/** 시위를 끝까지 당기는 데 걸리는 시간 */
-export const DRAW_FULL_SEC = 1.2;
-/** 이보다 적게 당기고 떼면 쏘지 않고 시위만 풀린다 */
-export const MIN_RELEASE_DRAW = 0.15;
-
-export interface BowGestureInput {
-  /** 엄지·검지 거리 ÷ 손 크기. null = 손이 안 보임 */
-  pinchRatio: number | null;
-  /** 접힌 손가락 수 */
-  curled: number;
+/** 손 관절 (거울 화면 이미지 좌표, z는 MediaPipe 상대 깊이) */
+export interface Landmark3 {
+  x: number;
+  y: number;
+  z: number;
 }
 
+/** 엄지 끝–검지 끝 거리 ÷ 손 크기가 이보다 작으면 "맞닿음" */
+export const PINCH_TOUCH_RATIO = 0.3;
+/** 당기는 중에는 이 정도까지 벌어져도 자세가 유지된 것으로 본다 */
+export const PINCH_HOLD_RATIO = 0.5;
+/**
+ * 발사(손가락을 모두 폄): 엄지–검지가 맞닿은 거리보다 조금만 떨어져 있으면 된다.
+ * 실제 편 손 사진에서 엄지가 검지 옆에 붙어 0.43 정도가 나와서, 맞닿음(0.3)보다 약간 큰 값으로 둔다.
+ */
+export const PINCH_OPEN_RATIO = 0.36;
+/** 이 각도(°)보다 많이 꺾이면 접힌 손가락 */
+export const CURL_BEND_DEG = 70;
+/** 이 각도(°)보다 덜 꺾이면 편 손가락 */
+export const EXTEND_BEND_DEG = 40;
+/** 준비 자세를 이만큼 유지해야 당기기 시작 (잠깐 스친 모양은 무시) */
+export const POSE_ARM_SEC = 0.12;
+/** 당기는 중 자세가 풀린 채 이 시간이 지나면 (손을 펴지 않았으면) 취소 */
+export const POSE_BREAK_SEC = 0.5;
+/** 시위를 끝까지 당기는 데 걸리는 시간 */
+export const DRAW_FULL_SEC = 1.2;
+/** 이보다 적게 당기고 펴면 쏘지 않고 시위만 풀린다 */
+export const MIN_RELEASE_DRAW = 0.15;
+
+const FINGERS = {
+  index: [5, 6, 7, 8],
+  middle: [9, 10, 11, 12],
+  ring: [13, 14, 15, 16],
+  pinky: [17, 18, 19, 20],
+} as const;
+
+export interface BowPose {
+  /** 엄지 끝–검지 끝 거리 ÷ 손 크기(손목–중지 뿌리) */
+  pinchRatio: number;
+  thumbIndexTouch: boolean;
+  /** 중지·약지·새끼 접힘 */
+  curled: { middle: boolean; ring: boolean; pinky: boolean };
+  curledCount: number;
+  /** 검지·중지·약지·새끼 폄 */
+  extendedCount: number;
+  /** 활 당기는 자세: 엄지·검지 맞닿음 + 중지·약지·새끼 모두 접힘 */
+  drawPose: boolean;
+  /** 손가락을 모두 폄: 네 손가락 중 3개 이상 펴지고 엄지·검지가 떨어짐 */
+  openHand: boolean;
+}
+
+const d3 = (a: Landmark3, b: Landmark3) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+
+/** 둘째 마디(PIP)에서 꺾인 각도: 0° = 곧게 폄, 180° = 완전히 접힘 */
+function pipBendDeg(lm: Landmark3[], mcp: number, pip: number, tip: number): number {
+  const v1 = { x: lm[pip].x - lm[mcp].x, y: lm[pip].y - lm[mcp].y, z: lm[pip].z - lm[mcp].z };
+  const v2 = { x: lm[tip].x - lm[pip].x, y: lm[tip].y - lm[pip].y, z: lm[tip].z - lm[pip].z };
+  const l1 = Math.hypot(v1.x, v1.y, v1.z) || 1e-6;
+  const l2 = Math.hypot(v2.x, v2.y, v2.z) || 1e-6;
+  const cos = (v1.x * v2.x + v1.y * v2.y + v1.z * v2.z) / (l1 * l2);
+  return (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
+}
+
+/**
+ * 21개 손 관절로 활 쏘기 자세를 판정한다.
+ * - 접힘: 마디가 70° 넘게 꺾였거나, 손가락 끝이 둘째 마디보다 손목에 가까움(손바닥 쪽으로 말림)
+ * - 폄: 마디가 40° 미만으로 곧고, 끝이 둘째 마디보다 손목에서 멂
+ */
+export function evaluateBowPose(lm: Landmark3[]): BowPose {
+  const size = d3(lm[0], lm[9]) || 1e-6;
+  const pinchRatio = d3(lm[4], lm[8]) / size;
+  const isCurled = ([mcp, pip, , tip]: readonly number[]) =>
+    pipBendDeg(lm, mcp, pip, tip) > CURL_BEND_DEG || d3(lm[tip], lm[0]) < d3(lm[pip], lm[0]);
+  const isExtended = ([mcp, pip, , tip]: readonly number[]) =>
+    pipBendDeg(lm, mcp, pip, tip) < EXTEND_BEND_DEG && d3(lm[tip], lm[0]) > d3(lm[pip], lm[0]);
+  const curled = {
+    middle: isCurled(FINGERS.middle),
+    ring: isCurled(FINGERS.ring),
+    pinky: isCurled(FINGERS.pinky),
+  };
+  const curledCount = Number(curled.middle) + Number(curled.ring) + Number(curled.pinky);
+  const extendedCount = [FINGERS.index, FINGERS.middle, FINGERS.ring, FINGERS.pinky].filter(isExtended).length;
+  const thumbIndexTouch = pinchRatio < PINCH_TOUCH_RATIO;
+  return {
+    pinchRatio,
+    thumbIndexTouch,
+    curled,
+    curledCount,
+    extendedCount,
+    drawPose: thumbIndexTouch && curledCount === 3,
+    openHand: extendedCount >= 3 && pinchRatio > PINCH_OPEN_RATIO,
+  };
+}
+
+export type BowGestureState = 'idle' | 'arming' | 'drawing' | 'hold';
+
 export interface BowGestureResult {
+  state: BowGestureState;
   /** 지금 당긴 정도 0~1 */
   draw: number;
   drawing: boolean;
@@ -199,48 +278,71 @@ export interface BowGestureResult {
 }
 
 /**
- * 활 쏘기 손동작:
- * - 엄지·검지를 붙이고 나머지 손가락을 주먹 쥐면 당기기 시작
- * - 붙이고 있는 동안 시위가 점점 당겨져 1.2초에 최대
- * - 엄지·검지를 떼면 그때 당긴 만큼으로 발사 (너무 조금 당겼으면 취소)
- * - 손이 0.3초 넘게 안 보이면 취소
+ * 활 쏘기 손동작 (손가락·손바닥 21개 관절로 판정):
+ * - 준비: 엄지·검지 끝이 맞닿고 중지·약지·새끼가 모두 접힌 자세를 0.12초 유지 → 당기기 시작
+ * - 당기기: 자세를 유지하는 동안(약간 흐트러져도 엄지·검지가 가깝고 두 손가락 이상 접혀 있으면) 시위가 당겨져 1.2초에 최대
+ * - 발사: 손가락을 모두 펴면 그때 당긴 만큼으로 발사 (너무 조금 당겼으면 취소)
+ * - 자세가 풀렸는데 손을 펴지 않고 0.5초가 지나면 취소. 손이 0.3초 넘게 안 보여도 취소
  */
 export class BowGesture {
-  private drawing = false;
+  private state: BowGestureState = 'idle';
+  private armSec = 0;
   private heldSec = 0;
+  private breakSec = 0;
   private lostSec = 0;
 
-  update(input: BowGestureInput, dtSec: number): BowGestureResult {
-    const idle = (fired = false, fireDraw = 0): BowGestureResult => ({
-      draw: 0,
-      drawing: false,
+  update(pose: BowPose | null, dtSec: number): BowGestureResult {
+    const out = (fired = false, fireDraw = 0): BowGestureResult => ({
+      state: this.state,
+      draw: this.draw,
+      drawing: this.state === 'drawing' || this.state === 'hold',
       fired,
       fireDraw,
     });
-    if (input.pinchRatio === null) {
-      if (!this.drawing) return idle();
-      this.lostSec += dtSec;
-      if (this.lostSec > HAND_LOST_GRACE_SEC) {
+    if (pose === null) {
+      if (this.state === 'drawing' || this.state === 'hold') {
+        this.lostSec += dtSec;
+        if (this.lostSec > HAND_LOST_GRACE_SEC) this.reset();
+      } else {
         this.reset();
-        return idle();
       }
-      return { draw: this.draw, drawing: true, fired: false, fireDraw: 0 };
+      return out();
     }
     this.lostSec = 0;
-    if (!this.drawing) {
-      if (input.pinchRatio < PINCH_CLOSE_RATIO && input.curled >= FIST_MIN_CURLED) {
-        this.drawing = true;
-        this.heldSec = 0;
+
+    if (this.state === 'idle' || this.state === 'arming') {
+      if (pose.drawPose) {
+        this.state = 'arming';
+        this.armSec += dtSec;
+        if (this.armSec >= POSE_ARM_SEC) {
+          this.state = 'drawing';
+          this.heldSec = 0;
+          this.breakSec = 0;
+        }
+      } else {
+        this.state = 'idle';
+        this.armSec = 0;
       }
-      return { draw: this.draw, drawing: this.drawing, fired: false, fireDraw: 0 };
+      return out();
     }
-    if (input.pinchRatio > PINCH_OPEN_RATIO) {
+
+    // drawing / hold
+    if (pose.openHand) {
       const d = this.draw;
       this.reset();
-      return d >= MIN_RELEASE_DRAW ? idle(true, d) : idle();
+      return d >= MIN_RELEASE_DRAW ? out(true, d) : out();
     }
-    this.heldSec += dtSec;
-    return { draw: this.draw, drawing: true, fired: false, fireDraw: 0 };
+    const holding = pose.pinchRatio < PINCH_HOLD_RATIO && pose.curledCount >= 2;
+    if (holding) {
+      this.state = 'drawing';
+      this.breakSec = 0;
+      this.heldSec += dtSec;
+    } else {
+      this.state = 'hold';
+      this.breakSec += dtSec;
+      if (this.breakSec > POSE_BREAK_SEC) this.reset();
+    }
+    return out();
   }
 
   get draw(): number {
@@ -248,10 +350,24 @@ export class BowGesture {
   }
 
   reset() {
-    this.drawing = false;
+    this.state = 'idle';
+    this.armSec = 0;
     this.heldSec = 0;
+    this.breakSec = 0;
     this.lostSec = 0;
   }
+}
+
+/** 화면에 보여 줄 한 줄 안내 */
+export function bowPoseHint(pose: BowPose | null, state: BowGestureState): string {
+  if (!pose) return '손이 안 보여요';
+  if (state === 'drawing') return '당기는 중 · 손가락을 모두 펴면 발사';
+  if (state === 'hold') return '손가락을 모두 펴면 발사 · 다시 쥐면 계속 당겨요';
+  const fingers = ['중지', '약지', '새끼'].filter((_, i) => ![pose.curled.middle, pose.curled.ring, pose.curled.pinky][i]);
+  const need: string[] = [];
+  if (!pose.thumbIndexTouch) need.push('엄지·검지 끝을 붙여요');
+  if (fingers.length) need.push(`${fingers.join('·')}를 접어 주먹`);
+  return need.length ? need.join(' · ') : '좋아요, 그대로!';
 }
 
 // ───────────────────────────── 화살 탄도 (5단계) ─────────────────────────────
